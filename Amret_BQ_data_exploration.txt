@@ -1,0 +1,552 @@
+###### Cross-check of complete extractions: amount paid (event) vs. amount due (schedule) vs. past due (loan balance)
+### Version 1...
+SELECT *,
+CASE WHEN Amount_Due=0 THEN 1
+     WHEN Amount_Due>0 AND Amount_Due-Total_Paid-Past_Due<0 THEN 2
+     WHEN Amount_Due>0 AND Amount_Due-Total_Paid-Past_Due>0 THEN 3 END AS Mismatch
+FROM
+(
+SELECT Contract_ID, Currency, Loan_Code, Disbursement_Date, Maturity_Date, 
+Disbursement_Amount, Written_Off_Flag,
+Principal_Paid, Interest_Paid, Total_Paid,
+IFNULL(Amount_Due,0) AS Amount_Due, IFNULL(Principal_Amount_Due,0) AS Principal_Amount_Due,
+IFNULL(Interest_Amount_Due,0 ) AS Interest_Amount_Due, 
+LB_Date, LB_Principal_Paid, LB_Interest_Paid, Principal_Outstanding,
+IFNULL(Principal_Past_Due,0) AS Principal_Past_Due,	
+IFNULL(Interests_Past_Due,0) AS Interests_Past_Due,
+IFNULL(Principal_Past_Due,0)+IFNULL(Interests_Past_Due,0) AS Past_Due,
+Early_Termination, N_Days_Overdue
+FROM
+(
+SELECT *
+FROM
+(
+SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Currency, SUM(CASE WHEN Payment_Type='Principal' THEN Event_Paid_Amount ELSE 0 END)  AS Principal_Paid,
+SUM(CASE WHEN Payment_Type='Interest' THEN Event_Paid_Amount ELSE 0 END)  AS Interest_Paid,
+SUM(Event_Paid_Amount) AS Total_Paid
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Loan_Code, Disbursement_Date, Maturity_Date, 
+Disbursement_Amount, Written_Off_Flag
+FROM `amret-mf-kh.test_amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01') B
+ON A.Contract_ID=B.CID) AB
+LEFT JOIN
+(SELECT Contract_ID AS CID, 
+SUM(Amount_Due) AS Amount_Due, 
+SUM(Capital_Amount_Due) AS Principal_Amount_Due, 
+SUM(Interest_Amount_Due) AS Interest_Amount_Due
+FROM `amret-mf-kh.test_amret_kh.schedule` 
+GROUP BY 1) C
+ON AB.Contract_ID=C.CID) ABC
+LEFT JOIN
+(SELECT *
+FROM 
+(
+SELECT Contract_ID AS CID, Update_Date AS LB_Date, 
+Principal_Paid AS LB_Principal_Paid,
+Interest_Paid AS LB_Interest_Paid, 
+Principal_Outstanding  AS Principal_Outstanding, 
+Principal_Past_Due AS Principal_Past_Due, 
+Interests_Past_Due AS Interests_Past_Due,
+Early_Termination, N_Days_Overdue, 
+Principal_Past_Due+Interests_Past_Due AS Past_Due,
+COUNT(*) OVER (PARTITION BY Contract_ID ORDER BY Update_Date DESC) AS Counter
+FROM `amret-mf-kh.test_amret_kh.loan_balance`)
+WHERE Counter=1) D
+ON ABC.Contract_ID=D.CID)
+WHERE ABS(Amount_Due-Total_Paid-Past_Due)>=0.1 
+
+### Version 2... en excluant Early Terminations et SC loans (21050) (09/04) et 
+###  et en prenant les echeances > date decaissement (parfois y a des erreurs, on charge le decaissement dans l'echeancier comme positif au lieu de negatif)
+SELECT 
+CASE WHEN ABS(Amount_Due-Total_Paid-Past_Due)<0.1 THEN 0 
+     WHEN Amount_Due=0 THEN 1
+     WHEN Amount_Due>0 AND Amount_Due-Total_Paid-Past_Due<0 THEN 2
+     WHEN Amount_Due>0 AND Amount_Due-Total_Paid-Past_Due>0 THEN 3 END AS Mismatch, 
+	 COUNT(*) AS obs
+FROM
+(
+SELECT Contract_ID, Currency, Loan_Code, Disbursement_Date, Maturity_Date, 
+Disbursement_Amount, Written_Off_Flag,
+Principal_Paid, Interest_Paid, Total_Paid,
+IFNULL(Amount_Due,0) AS Amount_Due, IFNULL(Principal_Amount_Due,0) AS Principal_Amount_Due,
+IFNULL(Interest_Amount_Due,0 ) AS Interest_Amount_Due, 
+LB_Date, LB_Principal_Paid, LB_Interest_Paid, Principal_Outstanding,
+IFNULL(Principal_Past_Due,0) AS Principal_Past_Due,	
+IFNULL(Interests_Past_Due,0) AS Interests_Past_Due,
+IFNULL(Principal_Past_Due,0)+IFNULL(Interests_Past_Due,0) AS Past_Due,
+Early_Termination, N_Days_Overdue
+FROM
+(
+SELECT *
+FROM
+(
+SELECT *
+FROM
+(
+SELECT *
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Currency, SUM(CASE WHEN Payment_Type='Principal' THEN Event_Paid_Amount ELSE 0 END)  AS Principal_Paid,
+SUM(CASE WHEN Payment_Type='Interest' THEN Event_Paid_Amount ELSE 0 END)  AS Interest_Paid,
+SUM(Event_Paid_Amount) AS Total_Paid
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Loan_Code, Disbursement_Date, Maturity_Date, 
+Disbursement_Amount, Written_Off_Flag
+FROM `amret-mf-kh.test_amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01') B
+ON A.Contract_ID=B.CID) AB
+LEFT JOIN
+(SELECT Contract_ID AS CID, MAX(Early_Termination) AS Early_Termination_Flag
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1) C
+ON AB.Contract_ID=C.CID)
+WHERE Early_Termination_Flag='N')
+) ABC
+LEFT JOIN
+(
+SELECT CID, 
+SUM(Amount_Due) AS Amount_Due, 
+SUM(Capital_Amount_Due) AS Principal_Amount_Due, 
+SUM(Interest_Amount_Due) AS Interest_Amount_Due
+FROM
+(
+SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT Contract_ID AS CID, Payment_Due_Date, 
+Amount_Due, Capital_Amount_Due, Interest_Amount_Due
+FROM `amret-mf-kh.test_amret_kh.schedule`) H
+LEFT JOIN
+(SELECT Contract_ID, Loan_Code, Disbursement_Date
+FROM `amret-mf-kh.test_amret_kh.loan`) I
+ON H.CID=I.Contract_ID)
+WHERE Payment_Due_Date>Disbursement_Date
+GROUP BY 1
+) D
+ON ABC.Contract_ID=D.CID) ABCD
+LEFT JOIN
+(SELECT *
+FROM 
+(
+SELECT Contract_ID AS CID, Update_Date AS LB_Date, 
+Principal_Paid AS LB_Principal_Paid,
+Interest_Paid AS LB_Interest_Paid, 
+Principal_Outstanding  AS Principal_Outstanding, 
+Principal_Past_Due AS Principal_Past_Due, 
+Interests_Past_Due AS Interests_Past_Due,
+Early_Termination, N_Days_Overdue, 
+Principal_Past_Due+Interests_Past_Due AS Past_Due,
+COUNT(*) OVER (PARTITION BY Contract_ID ORDER BY Update_Date DESC) AS Counter
+FROM `amret-mf-kh.test_amret_kh.loan_balance`)
+WHERE Counter=1) E
+ON ABCD.Contract_ID=E.CID)
+WHERE Loan_Code<>'21050'
+GROUP BY 1
+ORDER BY 1
+
+
+
+###### 294,323 contracts whose repayment account could be found in account_balance (91.8%)
+###### table loans_in_accbal
+SELECT *
+FROM
+(SELECT *
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID
+FROM `amret-mf-kh.test_amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01') B
+ON A.Contract_ID=B.CID
+GROUP BY 1, 2) AB
+LEFT JOIN 
+(SELECT Account_ID, 1 AS account_balance
+FROM `amret-mf-kh.test_amret_kh.account_balance`
+GROUP BY 1) C
+ON AB.Repayment_Account_ID=C.Account_ID)
+WHERE Account_ID IS NOT NULL
+
+#### check currencies are coherent between loans and accounts: OK!!
+SELECT Currency, Account_Currency, COUNT(*) as obs
+FROM
+(SELECT *
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Currency 
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID
+FROM `amret-mf-kh.test_amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01') B
+ON A.Contract_ID=B.CID
+GROUP BY 1, 2, 3) AB
+LEFT JOIN 
+(SELECT Account_ID, Currency AS Account_Currency, 1 AS account_balance
+FROM `amret-mf-kh.test_amret_kh.account_balance`
+GROUP BY 1, 2, 3) C
+ON AB.Repayment_Account_ID=C.Account_ID)
+WHERE Account_ID IS NOT NULL
+GROUP BY 1, 2
+ORDER BY 1, 2
+
+SELECT SUM(account_balance) as from_account_balance, COUNT(*) as obs
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID
+FROM `amret-mf-kh.test_amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01') B
+ON A.Contract_ID=B.CID
+GROUP BY 1, 2) AB
+LEFT JOIN 
+(SELECT Account_ID, 1 AS account_balance
+FROM `amret-mf-kh.test_amret_kh.account_balance`
+GROUP BY 1) C
+ON AB.Repayment_Account_ID=C.Account_ID
+
+###### check of account balances vs. payments from event
+SELECT * EXCEPT (CID)
+FROM
+(SELECT IFNULL(AB.Repayment_Account_ID,C.Account_ID) AS Account_ID,
+IFNULL(AB.Event_Date,C.Update_Date) AS Date,
+IFNULL(AB.Customer_ID,C.Customer_ID) AS Customer_ID,
+Principal_Balance, Amount_Paid, Contract_ID
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Customer_ID, Event_Date, SUM(Event_Paid_Amount) as Amount_Paid 
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2, 3) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID
+FROM `amret-mf-kh.test_amret_kh.loan`) B
+ON A.Contract_ID=B.CID) AB
+FULL JOIN
+(SELECT Account_ID, Update_Date, Principal_Balance, Customer_ID
+FROM `amret-mf-kh.test_amret_kh.account_balance`) C
+ON AB.Repayment_Account_ID=C.Account_ID
+AND AB.Event_Date=C.Update_Date) ABC
+INNER JOIN
+(SELECT Conract_ID AS CID
+FROM `amret-mf-kh.test_amret_kh.loans_in_accbal`) D
+ON ABC.Contract_ID=D.CID
+ORDER BY Account_ID, Date
+
+SELECT * EXCEPT (CID)
+FROM
+(SELECT IFNULL(AB.Repayment_Account_ID,C.Account_ID) AS Account_ID,
+IFNULL(AB.Event_Date,C.Update_Date) AS Date,
+IFNULL(AB.Customer_ID,C.Customer_ID) AS Customer_ID,
+Principal_Balance, Amount_Paid, Contract_ID
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Customer_ID, Event_Date, SUM(Event_Paid_Amount) as Amount_Paid 
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2, 3) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID
+FROM `amret-mf-kh.test_amret_kh.loan`) B
+ON A.Contract_ID=B.CID) AB
+FULL JOIN
+(SELECT Account_ID, Update_Date, Principal_Balance, Customer_ID
+FROM `amret-mf-kh.test_amret_kh.account_balance`) C
+ON AB.Repayment_Account_ID=C.Account_ID
+AND AB.Event_Date=C.Update_Date) ABC
+INNER JOIN
+(SELECT Contract_ID AS CID
+FROM `amret-mf-kh.test_amret_kh.loans_in_accbal`) D
+ON ABC.Contract_ID=D.CID
+ORDER BY Account_ID, Date
+
+### Table schedule_instalments (16/04/2020)
+SELECT Customer_ID, Contract_ID, Disbursement_Date, Currency, Disbursement_Amount, Repayment_Account_ID, Payment_Due_Date, Amount_Due, Amount_Due_Cum, 
+Event_Date, Amount_Paid, Amount_Paid_Cum,
+CASE WHEN Prev_Instalment_Due>0 AND Amount_Paid>Prev_Instalment_Due THEN Prev_Instalment_Due
+     WHEN Prev_Instalment_Due=0 AND Amount_Paid_Cum>Amount_Due_Cum THEN Amount_Due
+     WHEN Prev_Amount_Paid_Cum<Prev_Amount_Due_Cum THEN Amount_Paid_Cum-Prev_Amount_Due_Cum
+	   ELSE Amount_Paid END AS Instalment_Paid
+FROM
+(
+SELECT *, 
+CASE WHEN LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Instalment_Due
+FROM
+(SELECT *, 
+CASE WHEN Amount_Due_Cum-Amount_Paid_Cum>0 THEN Amount_Due_Cum-Amount_Paid_Cum ELSE 0 END AS Instalment_Due
+FROM
+(
+SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Customer_ID, Repayment_Account_ID, Currency, Disbursement_Amount, Disbursement_Date, Payment_Due_Date, Amount_Due,
+CASE WHEN LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Amount_Due_Cum,
+Amount_Due_Cum
+FROM
+(
+SELECT * EXCEPT (CID), 
+SUM(Amount_Due) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Amount_Due_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Amount_Due, Capital_Amount_Due, Interest_Amount_Due
+FROM `amret-mf-kh.amret_kh.schedule`) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Customer_ID, Currency, Disbursement_Amount, Disbursement_Date, Repayment_Account_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') B ### we exclude group loans and select only loans disbursed since September 2018
+ON A.Contract_ID=B.CID
+AND A.Payment_Due_Date>B.Disbursement_Date) ### we try to exclude disbursements wrongly uploaded as positive in schedules
+) AB
+LEFT JOIN
+(SELECT CID, Event_Date, Amount_Paid,
+CASE WHEN LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Amount_Paid_Cum,
+Amount_Paid_Cum
+FROM
+(SELECT *, SUM(Amount_Paid) OVER (PARTITION BY CID ORDER BY Event_Date) AS Amount_Paid_Cum
+FROM
+(SELECT Contract_ID as CID, Event_Date, 
+SUM(Event_Paid_Amount) AS Amount_Paid
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2)) C
+INNER JOIN
+(SELECT Contract_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') D
+ON C.CID=D.Contract_ID) CD
+ON AB.Contract_ID=CD.CID)
+WHERE Amount_Paid_Cum>Prev_Amount_Due_Cum 
+AND Prev_Amount_Paid_Cum<Amount_Due_Cum
+)
+)
+ORDER BY Contract_ID, Payment_Due_Date, Event_Date
+
+##### % of accounts of Feb 2020 outstanding customers that are used for repayment
+SELECT Account_Code, Account_Type, COUNT(*) as Accounts, 
+SUM(Repayment_Account) as Repayment_Accounts, 
+SUM(Repayment_Account)/COUNT(*)*100 AS Perc_Accounts, 
+SUM(Principal_Balance/Rate) AS Principal_Balance, 
+SUM(CASE WHEN Repayment_Account>0 THEN Principal_Balance/Rate ELSE 0 END) AS Repayment_Balance,
+SUM(CASE WHEN Repayment_Account>0 THEN Principal_Balance/Rate ELSE 0 END)/SUM(Principal_Balance/Rate)*100 AS Perc_Balance
+FROM
+(
+SELECT * EXCEPT(Cy, Exchange_Rate), 
+CASE WHEN Currency='KHR' THEN 1 ELSE E.Exchange_Rate END AS Rate
+FROM
+(SELECT Account_ID, Account_Code, Account_Type, Account_Date, Currency,
+Principal_Balance, MAX(Repayment_Account) AS Repayment_Account
+FROM
+(
+SELECT * EXCEPT (CID)
+FROM
+(SELECT * EXCEPT (CID)
+FROM
+(SELECT Customer_ID, Contract_ID
+FROM
+(SELECT Customer_ID, Contract_ID, Update_Date, Principal_Outstanding
+FROM `amret-mf-kh.amret_kh.loan_balance` 
+WHERE DATE(Update_Date) >= "2020-02-01" AND Principal_Outstanding>0)
+GROUP BY 1, 2) A
+LEFT JOIN
+(SELECT B.Account_ID AS Account_ID, CID, Account_Code, Account_Type,
+Last_Date As Account_Date, Currency, 
+Principal_Balance
+FROM
+(SELECT Account_ID, MAX(Update_Date) AS Last_Date
+FROM `amret-mf-kh.amret_kh.account_balance` 
+GROUP BY 1) B
+LEFT JOIN
+(SELECT Account_ID, Customer_ID AS CID, Account_Code, Account_Type,
+Update_Date, Currency, Principal_Balance
+FROM `amret-mf-kh.amret_kh.account_balance`) C
+ON B.Account_ID=C.Account_ID AND B.Last_Date=C.Update_Date) BC
+ON A.Customer_ID=BC.CID) ABC 
+LEFT JOIN
+(SELECT Contract_ID AS CID, Repayment_Account_ID, 1 as Repayment_Account
+FROM `amret-mf-kh.amret_kh.loan`) D
+ON ABC.Contract_ID=D.CID AND ABC.Account_ID=D.Repayment_Account_ID)
+GROUP BY Account_ID, Account_Code, Account_Type, Account_Date, 
+Principal_Balance, Currency) ABCD 
+LEFT JOIN
+(SELECT Currency as Cy, Exchange_Rate
+FROM `amret-mf-kh.amret_kh.exchange_rates`
+WHERE String_EOM_Date='20200228') E
+ON ABCD.Currency=E.Cy)
+GROUP BY Account_Code, Account_Type
+
+##### 06/05/2020: how many principal decreases are paid late?
+SELECT TIMESTAMP_DIFF(Event_Date,Payment_Due_Date,DAY) AS Delay, COUNT(*) as obs
+FROM
+(
+SELECT Customer_ID, Contract_ID, Disbursement_Date, Currency, Disbursement_Amount, Repayment_Account_ID, Payment_Due_Date, Amount_Due, Amount_Due_Cum, 
+Event_Date, Amount_Paid, Amount_Paid_Cum,
+CASE WHEN Prev_Instalment_Due>0 AND Amount_Paid>Prev_Instalment_Due THEN Prev_Instalment_Due
+     WHEN Prev_Instalment_Due=0 AND Amount_Paid_Cum>Amount_Due_Cum THEN Amount_Due
+     WHEN Prev_Amount_Paid_Cum<Prev_Amount_Due_Cum THEN Amount_Paid_Cum-Prev_Amount_Due_Cum
+	   ELSE Amount_Paid END AS Instalment_Paid, PD
+FROM
+(
+SELECT *, 
+CASE WHEN LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Instalment_Due
+FROM
+(SELECT *, 
+CASE WHEN Amount_Due_Cum-Amount_Paid_Cum>0 THEN Amount_Due_Cum-Amount_Paid_Cum ELSE 0 END AS Instalment_Due
+FROM
+(
+SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Customer_ID, Repayment_Account_ID, Currency, Disbursement_Amount, Disbursement_Date, Payment_Due_Date, Amount_Due,
+CASE WHEN LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Amount_Due_Cum,
+Amount_Due_Cum
+FROM
+(
+SELECT * EXCEPT (CID), 
+SUM(Amount_Due) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Amount_Due_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Amount_Due, Capital_Amount_Due, Interest_Amount_Due
+FROM `amret-mf-kh.amret_kh.schedule`) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Customer_ID, Currency, Disbursement_Amount, Disbursement_Date, Repayment_Account_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') B ### we exclude group loans and select only loans disbursed since September 2018
+ON A.Contract_ID=B.CID
+AND A.Payment_Due_Date>B.Disbursement_Date) ### we try to exclude disbursements wrongly uploaded as positive in schedules
+) AB
+LEFT JOIN
+(SELECT CID, Event_Date, Amount_Paid,
+CASE WHEN LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Amount_Paid_Cum,
+Amount_Paid_Cum, CASE WHEN PD>0 THEN 1 ELSE 0 END AS PD
+FROM
+(SELECT *, SUM(Amount_Paid) OVER (PARTITION BY CID ORDER BY Event_Date) AS Amount_Paid_Cum
+FROM
+(SELECT Contract_ID as CID, Event_Date, 
+SUM(Event_Paid_Amount) AS Amount_Paid,
+SUM(CASE WHEN Transaction_Code='423' THEN 1 ELSE 0 END) AS PD
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2)) C
+INNER JOIN
+(SELECT Contract_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') D
+ON C.CID=D.Contract_ID) CD
+ON AB.Contract_ID=CD.CID)
+WHERE Amount_Paid_Cum>Prev_Amount_Due_Cum 
+AND Prev_Amount_Paid_Cum<Amount_Due_Cum
+)
+)
+ORDER BY Contract_ID, Payment_Due_Date, Event_Date)
+WHERE PD=1 AND Instalment_Paid>1
+GROUP BY 1
+ORDER BY 1
+
+##### 18/05/2020 schedule_instalments with Principal Decrease Flag
+SELECT Customer_ID, Contract_ID, Disbursement_Date, Currency, Disbursement_Amount, Repayment_Account_ID, Payment_Due_Date, Amount_Due, Amount_Due_Cum, 
+Event_Date, Amount_Paid, Amount_Paid_Cum,
+CASE WHEN Prev_Instalment_Due>0 AND Amount_Paid>Prev_Instalment_Due THEN Prev_Instalment_Due
+     WHEN Prev_Instalment_Due=0 AND Amount_Paid_Cum>Amount_Due_Cum THEN Amount_Due
+     WHEN Prev_Amount_Paid_Cum<Prev_Amount_Due_Cum THEN Amount_Paid_Cum-Prev_Amount_Due_Cum ## payments overlapping on 2 instalments, after the previous installment is fully paid 
+	                                                                                           (Prev_Instalment_Due=0), the rest is attributed to the following one
+	 ELSE Amount_Paid END AS Instalment_Paid, Principal_Decrease_Flag
+FROM
+(
+SELECT *, 
+CASE WHEN LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Instalment_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Instalment_Due
+FROM
+(SELECT *, 
+CASE WHEN Amount_Due_Cum-Amount_Paid_Cum>0 THEN Amount_Due_Cum-Amount_Paid_Cum ELSE 0 END AS Instalment_Due
+FROM
+(
+SELECT * EXCEPT (CID)
+FROM
+(SELECT Contract_ID, Customer_ID, Repayment_Account_ID, Currency, Disbursement_Amount, Disbursement_Date, Payment_Due_Date, Amount_Due,
+CASE WHEN LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Due_CUM) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Amount_Due_Cum,
+Amount_Due_Cum
+FROM
+(
+SELECT * EXCEPT (CID), 
+SUM(Amount_Due) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Amount_Due_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Amount_Due, Capital_Amount_Due, Interest_Amount_Due
+FROM `amret-mf-kh.amret_kh.schedule`) A
+INNER JOIN
+(SELECT Contract_ID AS CID, Customer_ID, Currency, Disbursement_Amount, Disbursement_Date, Repayment_Account_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') B ### we exclude group loans and select only loans disbursed since September 2018
+ON A.Contract_ID=B.CID
+AND A.Payment_Due_Date>B.Disbursement_Date) ### we try to exclude disbursements wrongly uploaded as positive in schedules
+) AB
+LEFT JOIN
+(SELECT CID, Event_Date, Amount_Paid,
+CASE WHEN LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+     ELSE LAG(Amount_Paid_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Amount_Paid_Cum,
+Amount_Paid_Cum, CASE WHEN PD>0 THEN 1 ELSE 0 END AS Principal_Decrease_Flag
+FROM
+(SELECT *, SUM(Amount_Paid) OVER (PARTITION BY CID ORDER BY Event_Date) AS Amount_Paid_Cum
+FROM
+(SELECT Contract_ID as CID, Event_Date, 
+SUM(Event_Paid_Amount) AS Amount_Paid,
+SUM(CASE WHEN Transaction_Code='423' THEN 1 ELSE 0 END) AS PD
+FROM `amret-mf-kh.test_amret_kh.event` 
+GROUP BY 1, 2)) C
+INNER JOIN
+(SELECT Contract_ID
+FROM `amret-mf-kh.amret_kh.loan`
+WHERE Disbursement_Date>='2018-09-01' AND Loan_Code<>'21050') D
+ON C.CID=D.Contract_ID) CD
+ON AB.Contract_ID=CD.CID)
+WHERE Amount_Paid_Cum>Prev_Amount_Due_Cum ## we exclude payments referring to previous instalments (total paid must be higher than total due at previous instalment) 
+AND Prev_Amount_Paid_Cum<Amount_Due_Cum  ## we exclude payments to future instalemnts (total paid before payment must be lower than total due)
+)
+)
+ORDER BY Contract_ID, Payment_Due_Date, Event_Date
+
+#### Selection of advance payments for analysis 12/06/2020
+SELECT CASE WHEN DDays<0 THEN 1 ELSE 0 END AS negative_dddays, 
+CASE WHEN Instalment_Paid<1 THEN 1 ELSE 0 END AS rounding_issues, 
+CASE WHEN reverse_not_before_cum=0 THEN 1 ELSE 0 END AS early_terminations,
+COUNT(*) as payments
+FROM
+(SELECT *, SUM(Payments_Not_Before) OVER (Partition BY Contract_ID ORDER BY Event_Date DESC, Payment_Due_Date DESC) AS reverse_not_before_cum
+FROM
+(
+SELECT *, CASE WHEN DDays>=0 THEN 1 ELSE 0 END AS Payments_Not_Before
+FROM
+(
+SELECT * EXCEPT (CID, P_D_Date), 
+TIMESTAMP_DIFF(Event_Date,Payment_Due_Date, DAY) AS DDays
+FROM
+(SELECT *
+FROM `amret-mf-kh.amret_kh.schedule_instalments`) A
+LEFT JOIN
+(SELECT *, COUNT(*) OVER (PARTITION BY CID ORDER BY P_D_Date) AS Instalment_Number
+FROM
+(
+SELECT Contract_ID AS CID, Payment_Due_Date P_D_Date
+FROM `amret-mf-kh.amret_kh.schedule_instalments`
+GROUP BY 1, 2)) B
+ON A.Contract_ID=B.CID AND A.Payment_Due_Date=B.P_D_Date))) 
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3

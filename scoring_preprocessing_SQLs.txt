@@ -1,0 +1,317 @@
+###################
+#### saving_scoring
+###################
+CREATE OR REPLACE TABLE `amret-mfi-kh.d6s_scoring.saving_scoring`                          
+PARTITION BY RANGE_BUCKET(Department_ID_Scoring, GENERATE_ARRAY(0, 200, 1)) ### partition by Department_ID_Scoring
+AS
+SELECT Customer_ID, Account_ID, Account_Balance_Date, 
+Account_Currency_Code, Available_Balance_Amount, Account_Code, 
+Account_Type_Code, Department_ID_Scoring, 
+Available_Balance_Amount_KHR, Available_Balance_Amount_USD,
+CASE WHEN Account_Currency_Code='THB' THEN Available_Balance_Amount
+ELSE Available_Balance_Amount_KHR*Exchange_Rate END AS Available_Balance_Amount_THB
+FROM
+(SELECT Customer_ID, Account_ID, Account_Balance_Date, 
+Account_Currency_Code, Available_Balance_Amount, Account_Code, 
+Account_Type_Code, Department_ID_Scoring, 
+Available_Balance_Amount_KHR, 
+CASE WHEN Account_Currency_Code='USD' THEN Available_Balance_Amount
+ELSE Available_Balance_Amount_KHR*Exchange_Rate END AS Available_Balance_Amount_USD
+FROM
+(SELECT Customer_ID, Account_ID, Account_Balance_Date, 
+Account_Currency_Code, Available_Balance_Amount, Account_Code, 
+Account_Type_Code, Department_ID_Scoring, 
+Available_Balance_Amount/Exchange_Rate AS Available_Balance_Amount_KHR
+FROM
+(SELECT AB.Customer_ID AS Customer_ID, Account_ID, Account_Balance_Date, 
+Account_Currency_Code, Available_Balance_Amount, Account_Code, 
+Account_Type_Code, Department_ID_Scoring
+FROM
+(SELECT Customer_ID, A.Account_ID AS Account_ID, Account_Balance_Date, Account_Currency_Code, 
+Available_Balance_Amount, Account_Code, Account_Type_Code
+FROM
+(SELECT Customer_ID, Account_ID, Account_Balance_Date, Account_Currency_Code, 
+Available_Balance_Amount, Account_Code
+FROM `amret-mfi-kh.sandbox.account_balance`) A
+LEFT JOIN 
+(SELECT Account_ID, Account_Type_Code
+FROM `amret-mfi-kh.sandbox.account`) B
+ON A.Account_ID=B.Account_ID) AB
+LEFT JOIN
+(SELECT Customer_ID, Department_ID, Department_ID_Scoring
+FROM
+(SELECT * EXCEPT (Counter)
+FROM
+(SELECT Customer_ID, Department_ID,
+COUNT(*) OVER (PARTITION BY Customer_ID ORDER BY Capital_Disbursed_Amount DESC, Loan_ID) AS Counter ## counter=1 for highest amount contract for each customer
+FROM `amret-mfi-kh.sandbox.loan_20201107`)
+WHERE Counter=1) C
+LEFT JOIN
+(SELECT T24_Code, Department_ID_Int AS Department_ID_Scoring
+FROM `amret-mfi-kh.sandbox.Department`) D
+ON C.Department_ID=D.T24_Code) CD
+ON AB.Customer_ID=CD.Customer_ID) ABCD
+LEFT JOIN
+(SELECT Currency_Code, Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`) E
+ON ABCD.Account_Currency_Code=E.Currency_Code 
+AND ABCD.Account_Balance_Date=E.Date) ABCDE 
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='USD') F
+ON ABCDE.Account_Balance_Date=F.Date) ABCDEF
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='THB') G
+ON ABCDEF.Account_Balance_Date=G.Date
+
+#####################
+#### schedule_scoring
+#####################
+CREATE OR REPLACE TABLE `amret-mfi-kh.d6s_scoring.schedule_scoring`                          
+PARTITION BY RANGE_BUCKET(Department_ID_Scoring, GENERATE_ARRAY(0, 200, 1)) ### partition by Department_ID_Scoring
+AS
+SELECT * EXCEPT(Date, Exchange_Rate, Schedule_Update_Date),
+         CASE WHEN Schedule_Currency_Code='THB' THEN Total_Due_Amount
+		     ELSE Total_Due_Amount_KHR*Exchange_Rate END AS Total_Due_Amount_THB,
+		     CASE WHEN Schedule_Currency_Code='THB' THEN Capital_Due_Amount
+		     ELSE Capital_Due_Amount_KHR*Exchange_Rate END AS Capital_Due_Amount_THB			 
+FROM
+(SELECT * EXCEPT(Date, Exchange_Rate),
+         CASE WHEN Schedule_Currency_Code='USD' THEN Total_Due_Amount
+		     ELSE Total_Due_Amount_KHR*Exchange_Rate END AS Total_Due_Amount_USD,
+		     CASE WHEN Schedule_Currency_Code='USD' THEN Capital_Due_Amount
+		     ELSE Capital_Due_Amount_KHR*Exchange_Rate END AS Capital_Due_Amount_USD,			 
+FROM
+(SELECT * EXCEPT(Currency_Code, Date, Exchange_Rate),
+         Total_Due_Amount/Exchange_Rate AS Total_Due_Amount_KHR,
+		 Capital_Due_Amount/Exchange_Rate AS Capital_Due_Amount_KHR, 
+         CAST('2020-09-30' AS Date) AS Schedule_Update_Date
+FROM
+(SELECT AB.Customer_ID AS Customer_ID, Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, 
+Schedule_Currency_Code, Total_Due_Amount, Capital_Due_Amount,
+Department_ID_Scoring, Loan_Product_Code, Loan_Status_Name
+FROM
+(SELECT Customer_ID, Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Schedule_Currency_Code,
+Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, Capital_Due_Amount, 
+Loan_Product_Code, Loan_Status_Name
+FROM
+(SELECT Contract_ID, COUNT(*) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Instalment_Sequence_Number,
+Payment_Due_Date, Loan_Currency_Code AS Schedule_Currency_Code, IFNULL(Capital_Due_Amount,0) AS Capital_Due_Amount,
+IFNULL(Interest_Due_Amount,0) AS Interest_Due_Amount
+FROM `amret-mfi-kh.sandbox.schedules_ok_v2`) A
+LEFT JOIN
+(SELECT Loan_ID, Customer_ID, Loan_Product_Code, Loan_Status_Name
+FROM `amret-mfi-kh.sandbox.loan_20201107`) B
+ON A.Contract_ID=B.Loan_ID) AB
+LEFT JOIN
+(SELECT Customer_ID, Department_ID, Department_ID_Scoring
+FROM
+(SELECT * EXCEPT (Counter)
+FROM
+(SELECT Customer_ID, Department_ID,
+COUNT(*) OVER (PARTITION BY Customer_ID ORDER BY Capital_Disbursed_Amount DESC, Loan_ID) AS Counter ## counter=1 for highest amount contract for each customer
+FROM `amret-mfi-kh.sandbox.loan_20201107`)
+WHERE Counter=1) C
+LEFT JOIN
+(SELECT T24_Code, Department_ID_Int AS Department_ID_Scoring
+FROM `amret-mfi-kh.sandbox.Department`) D
+ON C.Department_ID=D.T24_Code) CD
+ON AB.Customer_ID=CD.Customer_ID) ABCD
+LEFT JOIN
+(SELECT Currency_Code, Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Date='2020-09-30') E
+ON ABCD.Schedule_Currency_Code=E.Currency_Code) ABCDE 
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='USD' AND Date='2020-09-30') F
+ON ABCDE.Schedule_Update_Date=F.Date) ABCDEF
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='THB' AND Date='2020-09-30') G
+ON ABCDEF.Schedule_Update_Date=G.Date
+
+#####################
+#### event_scoring
+#####################
+CREATE OR REPLACE TABLE `amret-mfi-kh.d6s_scoring.event_scoring`                          
+PARTITION BY RANGE_BUCKET(Department_ID_Scoring, GENERATE_ARRAY(0, 200, 1)) ### partition by Department_ID_Scoring
+AS
+SELECT * EXCEPT(Date, Exchange_Rate, Event_Update_Date),
+             CASE WHEN Event_Currency_Code='THB' THEN Total_Paid_Amount
+		     ELSE Total_Paid_Amount_KHR*Exchange_Rate END AS Total_Paid_Amount_KHR_THB,
+		     CASE WHEN Event_Currency_Code='THB' THEN Capital_Paid_Amount
+		     ELSE Capital_Paid_Amount_KHR*Exchange_Rate END AS Capital_Paid_Amount_THB			 
+FROM
+(SELECT * EXCEPT(Date, Exchange_Rate),
+             CASE WHEN Event_Currency_Code='USD' THEN Total_Paid_Amount
+		     ELSE Total_Paid_Amount_KHR*Exchange_Rate END AS Total_Due_Amount_USD,
+		     CASE WHEN Event_Currency_Code='USD' THEN Capital_Paid_Amount
+		     ELSE Capital_Paid_Amount_KHR*Exchange_Rate END AS Capital_Paid_Amount_USD,			 
+FROM
+(SELECT * EXCEPT(Currency_Code, Date, Exchange_Rate),
+         Total_Paid_Amount/Exchange_Rate AS Total_Paid_Amount_KHR,
+		 Capital_Paid_Amount/Exchange_Rate AS Capital_Paid_Amount_KHR, 
+         CAST('2020-09-30' AS Date) AS Event_Update_Date
+FROM
+(SELECT ABCD.Customer_ID AS Customer_ID, Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Event_Currency_Code, Early_Termination_Flag, Department_ID_Scoring
+FROM
+(SELECT Customer_ID, ABC.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Loan_Currency_Code AS Event_Currency_Code, 
+CASE WHEN (Loan_Status_Name IS NULL OR Loan_Status_Name='CLOSED') AND Last_Payment_Date<Loan_Maturity_Date 
+AND Payment_Due_Date>Last_Payment_Date
+THEN TRUE ELSE FALSE END AS Early_Termination_Flag
+FROM
+(SELECT AB.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Last_Payment_Date, Loan_Status_Name
+FROM
+(SELECT A.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Last_Payment_Date
+FROM
+(
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+SUM(Capital_Paid_Amount+Interest_Paid_Amount) AS Total_Paid_Amount,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount
+FROM
+(
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date,
+CASE WHEN Capital_Decrease_Flag=1 THEN Payment_Due_Date ELSE Event_Date END AS Event_Date,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount, 0 AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 6
+UNION ALL
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+0 AS Capital_Paid_Amount,
+SUM(Total_Paid_Amount-Capital_Paid_Amount) AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 5)
+WHERE NOT (Capital_Paid_Amount=0 AND Interest_Paid_Amount=0)
+GROUP BY 1, 2, 3, 4
+) A
+LEFT JOIN
+(SELECT Contract_ID, MAX(Event_Date) AS Last_Payment_Date 
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1) B
+ON A.CONTRACT_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Loan_ID, Loan_Status_Name
+FROM `amret-mfi-kh.sandbox.loan_balance_20200930`) C
+ON AB.Contract_ID=C.Loan_ID) ABC
+LEFT JOIN
+(SELECT Loan_ID, Loan_Product_Code, Loan_Maturity_Date, Loan_Currency_Code, Customer_ID
+FROM `amret-mfi-kh.sandbox.loan_20201107`) D
+ON ABC.Contract_ID=D.Loan_ID) ABCD
+LEFT JOIN
+(SELECT Customer_ID, Department_ID, Department_ID_Scoring
+FROM
+(SELECT * EXCEPT (Counter)
+FROM
+(SELECT Customer_ID, Department_ID,
+COUNT(*) OVER (PARTITION BY Customer_ID ORDER BY Capital_Disbursed_Amount DESC, Loan_ID) AS Counter ## counter=1 for highest amount contract for each customer
+FROM `amret-mfi-kh.sandbox.loan_20201107`)
+WHERE Counter=1) E
+LEFT JOIN
+(SELECT T24_Code, Department_ID_Int AS Department_ID_Scoring
+FROM `amret-mfi-kh.sandbox.Department`) F
+ON E.Department_ID=F.T24_Code) EF
+ON ABCD.Customer_ID=EF.Customer_ID) ABCDEF
+LEFT JOIN
+(SELECT Currency_Code, Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Date='2020-09-30') G
+ON ABCDEF.Event_Currency_Code=G.Currency_Code) ABCDEFG
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='USD' AND Date='2020-09-30') H
+ON ABCDEFG.Event_Update_Date=H.Date) ABCDEFGH
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='THB' AND Date='2020-09-30') I
+ON ABCDEFGH.Event_Update_Date=I.Date
+
+
+#####################
+#### loan_scoring
+#####################
+CREATE OR REPLACE TABLE `amret-mfi-kh.d6s_scoring.loan_scoring`                          
+PARTITION BY RANGE_BUCKET(Department_ID_Scoring, GENERATE_ARRAY(0, 200, 1)) ### partition by Department_ID_Scoring
+AS
+SELECT Contract_ID, Loan_Product_Code, Loan_Cycle_Number,  
+       Capital_Disbursed_Amount, Loan_Currency_Code, Loan_Disbursement_Date, Loan_Maturity_Date, Loan_End_Date,
+       Customer_ID, PortfolioManager_ID, Loan_Type_Code, Payment_Type_Name, Loan_Restructuration_Flag, Loan_Status_Name,
+       Department_ID_Scoring, R_Recommendation_ID, Optout_Flag, Variable_Schedule_Flag, Loan_Staff_Flag, 
+       Loan_Update_Date, Capital_Disbursed_Amount_KHR, Capital_Disbursed_Amount_USD,
+       CASE WHEN Loan_Currency_Code='THB' THEN Capital_Disbursed_Amount
+		   ELSE Capital_Disbursed_Amount_KHR*Exchange_Rate END AS Capital_Disbursed_Amount_THB
+FROM
+(SELECT * EXCEPT(Date, Exchange_Rate),
+             CASE WHEN Loan_Currency_Code='USD' THEN Capital_Disbursed_Amount
+		     ELSE Capital_Disbursed_Amount_KHR*Exchange_Rate END AS Capital_Disbursed_Amount_USD
+FROM
+(SELECT * EXCEPT(Currency_Code, Date, Exchange_Rate),
+         CAST(Capital_Disbursed_Amount/Exchange_Rate AS INT64) AS Capital_Disbursed_Amount_KHR
+FROM
+(SELECT AB.Customer_ID AS Customer_ID, Contract_ID, Loan_Product_Code,Loan_Cycle_Number,  
+Capital_Disbursed_Amount, Loan_Disbursement_Date, Loan_Maturity_Date, 
+Loan_Type_Code, Payment_Type_Name, Loan_Restructuration_Flag, 
+R_Recommendation_ID, Loan_Currency_Code,PortfolioManager_ID,
+Loan_Status_Name, Loan_Update_Date, Loan_End_Date, Department_ID_Scoring, 
+FALSE AS Optout_Flag, 0 AS Variable_Schedule_Flag, 
+CASE WHEN Loan_Product_Code='21056' THEN TRUE ELSE FALSE END AS Loan_Staff_Flag
+FROM
+(SELECT A.Contract_ID AS Contract_ID, Loan_Product_Code,Loan_Cycle_Number,  
+Capital_Disbursed_Amount, Loan_Disbursement_Date, Loan_Maturity_Date, 
+Customer_ID, Loan_Type_Code, Payment_Type_Name, Loan_Restructuration_Flag, 
+R_Recommendation_ID, Loan_Currency_Code,PortfolioManager_ID,
+Loan_Status_Name, Loan_Update_Date,
+CASE WHEN Loan_Status_Name="CLOSED" THEN Last_Payment_Date ELSE NULL END AS Loan_End_Date
+FROM
+(SELECT Loan_ID AS Contract_ID, Loan_Product_Code,Loan_Cycle_Number,  
+CAST(Capital_Disbursed_Amount AS INT64) AS Capital_Disbursed_Amount, 
+Loan_Disbursement_Date,  Loan_Maturity_Date, 
+Customer_ID, Loan_Type_Code, Payment_Type_Name, Loan_Restructuration_Flag, 
+NULL AS R_Recommendation_ID, Loan_Currency_Code,PortfolioManager_ID,
+Loan_Status_Name, Loan_Update_Date
+FROM `amret-mfi-kh.sandbox.loan_20201107`) A
+LEFT JOIN
+(SELECT Contract_ID, MAX( Event_Date) AS Last_Payment_Date 
+FROM  `amret-mfi-kh.sandbox.event_calculated`
+GROUP BY 1) B
+ON A.Contract_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Customer_ID, Department_ID, Department_ID_Scoring
+FROM
+(SELECT * EXCEPT (Counter)
+FROM
+(SELECT Customer_ID, Department_ID,
+COUNT(*) OVER (PARTITION BY Customer_ID ORDER BY Capital_Disbursed_Amount DESC, Loan_ID) AS Counter ## counter=1 for highest amount contract for each customer
+FROM `amret-mfi-kh.sandbox.loan_20201107`)
+WHERE Counter=1) C
+LEFT JOIN
+(SELECT T24_Code, Department_ID_Int AS Department_ID_Scoring
+FROM `amret-mfi-kh.sandbox.Department`) D
+ON C.Department_ID=D.T24_Code) CD
+ON AB.Customer_ID=CD.Customer_ID) ABCD
+LEFT JOIN
+(SELECT Currency_Code, Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`) E
+ON ABCD.Loan_Currency_Code=E.Currency_Code
+AND Loan_Update_Date=Date) ABCDE
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='USD') F
+ON ABCDE.Loan_Update_Date=F.Date) ABCDEF
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='THB') G
+ON ABCDEF.Loan_Update_Date=G.Date

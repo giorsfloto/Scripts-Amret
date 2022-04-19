@@ -1,0 +1,408 @@
+SELECT *
+FROM
+(SELECT *,
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid
+	 
+FROM
+(
+SELECT *,  
+     CASE WHEN LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Total_Due,	 
+	 CASE WHEN LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Capital_Due,
+	 CASE WHEN LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Interest_Due	 
+FROM
+(SELECT *, 
+        CASE WHEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum>0 THEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum ELSE 0 END AS Total_Due,
+		CASE WHEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum>0 THEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum ELSE 0 END AS Capital_Due,
+		CASE WHEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum>0 THEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum ELSE 0 END AS Interest_Due
+FROM
+(SELECT *, 
+        CASE WHEN LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Total_Due_Amount_Cum,
+        CASE WHEN LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Capital_Due_Amount_Cum,
+		CASE WHEN LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Interest_Due_Amount_Cum
+
+FROM
+(SELECT Contract_ID, Payment_Due_Date, 
+       Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, 
+	   SUM(Capital_Due_Amount+Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Total_Due_Amount_Cum,
+	   Capital_Due_Amount,
+       SUM(Capital_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Capital_Due_Amount_Cum,
+       Interest_Due_Amount,
+	   SUM(Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Interest_Due_Amount_Cum
+FROM `amret-mfi-kh.d6s_scoring.schedule_scoring`)) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Event_Date, 
+       Total_Paid_Amount, Total_Paid_Amount_Cum,
+       CASE WHEN LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Total_Paid_Amount_Cum,
+       Capital_Paid_Amount, Capital_Paid_Amount_Cum,
+       CASE WHEN LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Capital_Paid_Amount_Cum,
+	   Interest_Paid_Amount, Interest_Paid_Amount_Cum,
+       CASE WHEN LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Interest_Paid_Amount_Cum,
+
+FROM
+(SELECT *, SUM(Total_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Total_Paid_Amount_Cum,
+           SUM(Capital_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Capital_Paid_Amount_Cum,
+           SUM(Interest_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Interest_Paid_Amount_Cum
+FROM
+(SELECT Contract_ID, CAST(Transaction_DateTime AS DATE) AS Event_Date,
+                     SUM(Transaction_Amount) AS Total_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount
+ FROM `amret-mfi-kh.sandbox.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751')
+ GROUP BY 1, 2))) B
+ ON A.Contract_ID=B.CID)
+ WHERE Total_Paid_Amount_Cum>Prev_Total_Due_Amount_Cum AND Prev_Total_Paid_Amount_Cum<Total_Due_Amount_Cum))
+ WHERE Total_Paid>0.00001
+ ORDER BY Contract_ID, Payment_Due_Date, Event_Date
+ 
+ 
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.event_calculated`
+  AS
+ SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid_Amount,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid_Amount,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid_Amount
+	 
+FROM
+(SELECT *,
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid
+	 
+FROM
+(
+SELECT *,  
+     CASE WHEN LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Total_Due,	 
+	 CASE WHEN LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Capital_Due,
+	 CASE WHEN LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Interest_Due	 
+FROM
+(SELECT *, 
+        CASE WHEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum>0 THEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum ELSE 0 END AS Total_Due,
+		CASE WHEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum>0 THEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum ELSE 0 END AS Capital_Due,
+		CASE WHEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum>0 THEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum ELSE 0 END AS Interest_Due
+FROM
+(SELECT *, 
+        CASE WHEN LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Total_Due_Amount_Cum,
+        CASE WHEN LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Capital_Due_Amount_Cum,
+		CASE WHEN LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Interest_Due_Amount_Cum
+
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number,
+       Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, 
+	   SUM(Capital_Due_Amount+Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Total_Due_Amount_Cum,
+	   Capital_Due_Amount,
+       SUM(Capital_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Capital_Due_Amount_Cum,
+       Interest_Due_Amount,
+	   SUM(Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Interest_Due_Amount_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number, Capital_Due_Amount, 
+Total_Due_Amount-Capital_Due_Amount AS Interest_Due_Amount
+FROM `amret-mfi-kh.d6s_scoring.schedule_scoring`
+UNION ALL
+SELECT Loan_ID AS Contract_ID, Loan_Balance_Date AS Payment_Due_Date, 0 AS Instalment_Sequence_Number,
+Principal_Overdue_Amount  AS Capital_Due_Amount, Interest_Overdue_Amount AS Interest_Overdue_Amount 
+FROM `amret-mfi-kh.sandbox.loan_balance_20190228` 
+WHERE (Principal_Overdue_Amount>0 OR Interest_OverDue_Amount>0)))) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Event_Date, 
+       Total_Paid_Amount, Total_Paid_Amount_Cum,
+       CASE WHEN LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Total_Paid_Amount_Cum,
+       Capital_Paid_Amount, Capital_Paid_Amount_Cum,
+       CASE WHEN LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Capital_Paid_Amount_Cum,
+	   Interest_Paid_Amount, Interest_Paid_Amount_Cum,
+       CASE WHEN LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Interest_Paid_Amount_Cum,
+
+FROM
+(SELECT *, SUM(Total_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Total_Paid_Amount_Cum,
+           SUM(Capital_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Capital_Paid_Amount_Cum,
+           SUM(Interest_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Interest_Paid_Amount_Cum
+FROM
+(SELECT Contract_ID, CAST(Transaction_DateTime AS DATE) AS Event_Date,
+                     SUM(Transaction_Amount) AS Total_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount
+ FROM `amret-mfi-kh.sandbox.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751')
+ GROUP BY 1, 2))) B
+ ON A.Contract_ID=B.CID)
+ WHERE Total_Paid_Amount_Cum>Prev_Total_Due_Amount_Cum AND Prev_Total_Paid_Amount_Cum<Total_Due_Amount_Cum))
+ WHERE Total_Paid>0.00001
+ 
+############################################################# 
+######### 8/12 addition of flag for capital decrease payments
+#############################################################
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.event_calculated_v2`
+  AS
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid_Amount,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid_Amount,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid_Amount,
+	 
+	 CASE WHEN Capital_Decreases>0 THEN 1 ELSE 0 END AS Capital_Decrease_Flag
+	 
+FROM
+(SELECT *,
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid
+	 
+FROM
+(
+SELECT *,  
+     CASE WHEN LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Total_Due,	 
+	 CASE WHEN LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Capital_Due,
+	 CASE WHEN LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Interest_Due	 
+FROM
+(SELECT *, 
+        CASE WHEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum>0 THEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum ELSE 0 END AS Total_Due,
+		CASE WHEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum>0 THEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum ELSE 0 END AS Capital_Due,
+		CASE WHEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum>0 THEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum ELSE 0 END AS Interest_Due
+FROM
+(SELECT *, 
+        CASE WHEN LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Total_Due_Amount_Cum,
+        CASE WHEN LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Capital_Due_Amount_Cum,
+		CASE WHEN LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+        ELSE LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Interest_Due_Amount_Cum
+
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number,
+       Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, 
+	   SUM(Capital_Due_Amount+Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Total_Due_Amount_Cum,
+	   Capital_Due_Amount,
+       SUM(Capital_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Capital_Due_Amount_Cum,
+       Interest_Due_Amount,
+	   SUM(Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Interest_Due_Amount_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number, Capital_Due_Amount, 
+Total_Due_Amount-Capital_Due_Amount AS Interest_Due_Amount
+FROM `amret-mfi-kh.d6s_scoring.schedule_scoring`
+UNION ALL
+SELECT Loan_ID AS Contract_ID, Loan_Balance_Date AS Payment_Due_Date, 0 AS Instalment_Sequence_Number,
+Principal_Overdue_Amount  AS Capital_Due_Amount, Interest_Overdue_Amount AS Interest_Overdue_Amount 
+FROM `amret-mfi-kh.sandbox.loan_balance_20190228` 
+WHERE (Principal_Overdue_Amount>0 OR Interest_OverDue_Amount>0)))) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Event_Date, 
+       Total_Paid_Amount, Total_Paid_Amount_Cum,
+       CASE WHEN LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Total_Paid_Amount_Cum,
+       Capital_Paid_Amount, Capital_Paid_Amount_Cum,
+       CASE WHEN LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Capital_Paid_Amount_Cum,
+	   Interest_Paid_Amount, Interest_Paid_Amount_Cum,
+       CASE WHEN LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 ## to fix first rows for each contract that otherwise are null
+       ELSE LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Interest_Paid_Amount_Cum, Capital_Decreases
+
+FROM
+(SELECT *, SUM(Total_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Total_Paid_Amount_Cum,
+           SUM(Capital_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Capital_Paid_Amount_Cum,
+           SUM(Interest_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Interest_Paid_Amount_Cum
+FROM
+(SELECT Contract_ID, CAST(Transaction_DateTime AS DATE) AS Event_Date,
+                     SUM(Transaction_Amount) AS Total_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+					 SUM(CASE WHEN Transaction_Type_Code='423' THEN 1 ELSE 0 END) AS Capital_Decreases
+ FROM `amret-mfi-kh.sandbox.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751')
+ GROUP BY 1, 2))) B
+ ON A.Contract_ID=B.CID)
+ WHERE Total_Paid_Amount_Cum>Prev_Total_Due_Amount_Cum AND Prev_Total_Paid_Amount_Cum<Total_Due_Amount_Cum))
+ WHERE Total_Paid>0.00001
+ 
+ 
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.event_calculated_v3`
+AS
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+SUM(Capital_Paid_Amount+Interest_Paid_Amount) AS Total_Paid_Amount,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount
+FROM
+(
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date,
+CASE WHEN Capital_Decrease_Flag=1 THEN Payment_Due_Date ELSE Event_Date END AS Event_Date,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount, 0 AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 6
+UNION ALL
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+0 AS Capital_Paid_Amount,
+SUM(Total_Paid_Amount-Capital_Paid_Amount) AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 5)
+WHERE NOT (Capital_Paid_Amount=0 AND Interest_Paid_Amount=0)
+GROUP BY 1, 2, 3, 4
+
+############################################################# 
+######### event_scoring
+#############################################################
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.event_scoring`
+  AS
+SELECT * EXCEPT(Date, Exchange_Rate, Event_Update_Date),
+             CASE WHEN Event_Currency_Code='THB' THEN Total_Paid_Amount
+		     ELSE Total_Paid_Amount_KHR*Exchange_Rate END AS Total_Paid_Amount_KHR_THB,
+		     CASE WHEN Event_Currency_Code='THB' THEN Capital_Paid_Amount
+		     ELSE Capital_Paid_Amount_KHR*Exchange_Rate END AS Capital_Paid_Amount_THB			 
+FROM
+(SELECT * EXCEPT(Date, Exchange_Rate),
+             CASE WHEN Event_Currency_Code='USD' THEN Total_Paid_Amount
+		     ELSE Total_Paid_Amount_KHR*Exchange_Rate END AS Total_Due_Amount_USD,
+		     CASE WHEN Event_Currency_Code='USD' THEN Capital_Paid_Amount
+		     ELSE Capital_Paid_Amount_KHR*Exchange_Rate END AS Capital_Paid_Amount_USD,			 
+FROM
+(SELECT * EXCEPT(Currency_Code, Date, Exchange_Rate),
+         Total_Paid_Amount/Exchange_Rate AS Total_Paid_Amount_KHR,
+		 Capital_Paid_Amount/Exchange_Rate AS Capital_Paid_Amount_KHR, 
+         CAST('2020-09-30' AS Date) AS Event_Update_Date
+FROM
+(SELECT ABCD.Customer_ID AS Customer_ID, Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Event_Currency_Code, Early_Termination_Flag, Department_ID_Scoring
+FROM
+(SELECT Customer_ID, ABC.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Loan_Currency_Code AS Event_Currency_Code, 
+CASE WHEN (Loan_Status_Name IS NULL OR Loan_Status_Name='CLOSED') AND Last_Payment_Date<Loan_Maturity_Date THEN TRUE ELSE FALSE END AS Early_Termination_Flag
+FROM
+(SELECT AB.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Last_Payment_Date, Loan_Status_Name
+FROM
+(SELECT A.Contract_ID AS Contract_ID,  Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+Total_Paid_Amount, Capital_Paid_Amount, Last_Payment_Date
+FROM
+(SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+SUM(Capital_Paid_Amount+Interest_Paid_Amount) AS Total_Paid_Amount,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount
+FROM
+(
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date,
+CASE WHEN Capital_Decrease_Flag=1 THEN Payment_Due_Date ELSE Event_Date END AS Event_Date,
+SUM(Capital_Paid_Amount) AS Capital_Paid_Amount, 0 AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 6
+UNION ALL
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date,
+0 AS Capital_Paid_Amount,
+SUM(Total_Paid_Amount-Capital_Paid_Amount) AS Interest_Paid_Amount
+FROM `amret-mfi-kh.sandbox.event_calculated_v2`
+GROUP BY 1, 2, 3, 4, 5)
+GROUP BY 1, 2, 3, 4) A
+LEFT JOIN
+(SELECT Contract_ID, MAX(Event_Date) AS Last_Payment_Date 
+FROM `amret-mfi-kh.sandbox.event_calculated`
+GROUP BY 1) B
+ON A.CONTRACT_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Loan_ID, Loan_Status_Name
+FROM `amret-mfi-kh.sandbox.loan_balance_20200930`) C
+ON AB.Contract_ID=C.Loan_ID) ABC
+LEFT JOIN
+(SELECT Loan_ID, Loan_Product_Code, Loan_Maturity_Date, Loan_Currency_Code, Customer_ID
+FROM `amret-mfi-kh.sandbox.loan_20201107`) D
+ON ABC.Contract_ID=D.Loan_ID) ABCD
+LEFT JOIN
+(SELECT Customer_ID, Department_ID, Department_ID_Scoring
+FROM
+(SELECT * EXCEPT (Counter)
+FROM
+(SELECT Customer_ID, Department_ID,
+COUNT(*) OVER (PARTITION BY Customer_ID ORDER BY Capital_Disbursed_Amount DESC, Loan_ID) AS Counter ## counter=1 for highest amount contract for each customer
+FROM `amret-mfi-kh.sandbox.loan_20201107`)
+WHERE Counter=1) E
+LEFT JOIN
+(SELECT T24_Code, Department_ID_Int AS Department_ID_Scoring
+FROM `amret-mfi-kh.sandbox.Department`) F
+ON E.Department_ID=F.T24_Code) EF
+ON ABCD.Customer_ID=EF.Customer_ID) ABCDEF
+LEFT JOIN
+(SELECT Currency_Code, Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Date='2020-09-30') G
+ON ABCDEF.Event_Currency_Code=G.Currency_Code) ABCDEFG
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='USD' AND Date='2020-09-30') H
+ON ABCDEFG.Event_Update_Date=H.Date) ABCDEFGH
+LEFT JOIN 
+(SELECT Date, Exchange_Rate
+FROM `amret-mfi-kh.sandbox.exchange_rate`
+WHERE Currency_Code='THB' AND Date='2020-09-30') I
+ON ABCDEFGH.Event_Update_Date=I.Date

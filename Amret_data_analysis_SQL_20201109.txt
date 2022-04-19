@@ -1,0 +1,331 @@
+##### 12,342 loans over 196,295 are KO:
+##### 6,362 have paid<due  (OK=-1)
+##### 5,331 have paid>due (OK=1)
+##### 183,593 have paid=due (OK=0) (93.7%)
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.loan_kos` 
+AS
+SELECT *
+FROM
+(
+SELECT *, CASE WHEN Loan_Currency_Code='USD' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount>0.1
+OR Loan_Currency_Code='KHR' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount>100  
+OR Loan_Currency_Code='THB' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount>1 THEN 1 
+WHEN Loan_Currency_Code='USD' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount<-0.1
+OR Loan_Currency_Code='KHR' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount<-100  
+OR Loan_Currency_Code='THB' AND Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount<-1 THEN -1 
+ELSE 0 END AS OK
+FROM
+(SELECT Loan_ID, Loan_Currency_Code, Loan_Disbursement_Date, Loan_Maturity_Date,
+Capital_Disbursed_Amount, Loan_Restructuration_Flag, Loan_Status_Name,
+IFNULL(Capital_Paid_Amount,0) AS Capital_Paid_Amount, 
+IFNULL(Principal_Overdue_Amount,0) AS Principal_Overdue_Amount, 
+IFNULL(Principal_Outstanding_Amount, 0) AS Principal_Outstanding_Amount,
+IFNULL(Capital_Due_Amount,0) AS Capital_Due_Amount,
+FROM
+(
+SELECT * EXCEPT (LID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT Loan_ID, Loan_Disbursement_Date, Loan_Maturity_Date, Loan_Restructuration_Flag, 
+Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, Loan_Currency_Code
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') A
+LEFT JOIN
+(SELECT Contract_ID, 
+SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code='752' THEN Transaction_Amount ELSE 0 END) AS Penalty_Paid_Amount
+FROM `amret-mfi-kh.sandbox.transaction`WHERE Transaction_Type_Code IN ('420','423','434','750','751','752')
+GROUP BY 1) B
+ON A.Loan_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Contract_ID, SUM(Capital_Due_Amount) AS Capital_Due_Amount, SUM( Interest_Due_Amount) AS Interest_Due_Amount
+FROM 
+(SELECT * EXCEPT (Loan_ID)
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+Payment_Month,Schedule_Update_Date
+FROM
+(
+SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month,Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01') A
+INNER JOIN
+(SELECT Contract_ID AS CID, 
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS PMonth,
+MAX(Schedule_Update_Date) AS Last_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+GROUP BY 1, 2) B
+ON A.Contract_ID=B.CID AND A.Payment_Month=B.PMonth
+AND A.Schedule_Update_Date=B.Last_Date) A
+LEFT JOIN
+(SELECT Loan_ID, Loan_Disbursement_Date, Capital_Disbursed_Amount, Loan_Status_Name,
+Loan_Maturity_Date
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') B
+ON A.Contract_ID=B.Loan_ID)
+WHERE Payment_Due_Date>Loan_Disbursement_Date
+AND ((Loan_Status_Name='CLOSED'  AND Payment_Due_Date<=Loan_Maturity_Date)
+OR (Loan_Status_Name<>'CLOSED' AND Loan_Maturity_Date>'2020-09-30' AND Payment_Due_Date<='2020-09-30') 
+OR (Loan_Status_Name<>'CLOSED' AND Loan_Maturity_Date<='2020-09-30' AND Payment_Due_Date<=Loan_Maturity_Date))
+GROUP BY 1) C
+ON AB.Loan_ID=C.Contract_ID) ABC
+LEFT JOIN
+(SELECT Loan_ID AS LID, Loan_Balance_Date, Principal_Outstanding_Amount, Principal_Overdue_Amount, 
+Interest_Outstanding_Amount, Interest_Overdue_Amount, Penalty_Overdue_Amount 
+FROM `amret-mfi-kh.sandbox.loan_balance`) D
+ON ABC.Loan_ID=D.LID)))
+WHERE OK<>0
+
+### Patch to find missing instalments from previous schedules and fix 
+### some contract with paid>due (4,618)
+##### 6,367 have paid<due  (OK=-1)
+##### 1,357 have paid>due (OK=1)
+##### 188,571 have paid=due (OK=0) (96.1%)
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.loan_kos_v2` 
+AS
+SELECT *
+FROM
+(
+SELECT * EXCEPT (Contract_ID) 
+FROM
+(SELECT * 
+FROM sandbox.loan_kos) A
+LEFT JOIN
+(SELECT Contract_ID, 0 AS OK2
+FROM
+(SELECT Contract_ID, Capital_Paid_Amount, SUM(Capital_Due_Amount) AS Capital_Due_Amount
+FROM
+(
+SELECT Contract_ID, Payment_Due_Date, Capital_Paid_Amount, Capital_Due_Amount, Interest_Due_Amount,
+Payment_Month, Schedule_Update_Date, Loan_Maturity_Date, Mismatch, Version
+FROM
+(SELECT Loan_ID, Loan_Maturity_Date, Capital_Paid_Amount, Capital_Paid_Amount-Capital_Due_Amount As Mismatch
+FROM `amret-mfi-kh.sandbox.loan_kos` 
+WHERE OK=1 AND Capital_Disbursed_Amount-Capital_Paid_Amount=Principal_Outstanding_Amount) C
+LEFT JOIN
+(SELECT * EXCEPT (CID, PMonth, SU_Date)
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month, Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01') A
+LEFT JOIN
+(SELECT *, 
+COUNT(*) OVER (PARTITION BY CID, PMonth ORDER BY SU_Date DESC) AS Version
+FROM
+(
+SELECT Contract_ID AS CID, DATETIME_TRUNC(Payment_Due_Date, MONTH) AS PMonth,
+Schedule_Update_Date AS SU_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+GROUP BY 1, 2, 3)) B
+ON A.Contract_ID=B.CID AND A.Payment_Month=B.PMonth 
+AND A.Schedule_Update_Date=B.SU_Date) AB
+ON C.Loan_ID=AB.Contract_ID)
+WHERE Payment_Due_Date<=Loan_Maturity_Date
+AND (Version=1 OR (Version=2 AND Mismatch=Capital_Due_Amount))
+GROUP BY 1, 2)
+WHERE Capital_Paid_Amount=Capital_Due_Amount) B
+ON A.Loan_ID=B.Contract_ID)
+
+
+### Patch to exclude restructured  instalments for restructured loans
+### some contract with paid>due (3,375)
+##### 2,992 have paid<due  (OK=-1)
+##### 1,357 have paid>due (OK=1)
+##### 191,946 have paid=due (OK=0) (97.8%)
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.loan_kos_v3`
+AS
+SELECT *
+FROM
+(
+SELECT *, CASE WHEN Capital_Paid_Amount=Capital_Due_Amount THEN 0 ELSE 1 END AS OK3
+FROM
+(SELECT Loan_ID, Capital_Paid_Amount, SUM(CDue_Amount) AS Capital_Due_Amount
+FROM
+(SELECT Loan_ID, Capital_Paid_Amount, AB.Capital_Due_Amount AS Capital_Due_Amount, Mismatch, Loan_Update_Date,
+CDue_Amount, Payment_Month, Payment_Due_Date, Schedule_Update_Date
+FROM
+(SELECT A.Loan_ID AS Loan_ID, Capital_Paid_Amount, Capital_Due_Amount, Mismatch, Loan_Update_Date
+FROM
+(SELECT Loan_ID, Capital_Paid_Amount, Capital_Due_Amount, Capital_Paid_Amount-Capital_Due_Amount As Mismatch
+FROM `amret-mfi-kh.sandbox.loan_kos_v2` 
+WHERE OK=-1 AND OK2 IS NULL AND Capital_Disbursed_Amount-Capital_Paid_Amount=Principal_Outstanding_Amount
+AND Loan_Restructuration_Flag=TRUE) A
+LEFT JOIN
+(SELECT Loan_ID, Loan_Update_Date
+FROM `amret-mfi-kh.sandbox.loan_20201107`) B
+ON A.Loan_ID=B.Loan_ID) AB
+LEFT JOIN
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount AS CDue_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month, Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+AND Capital_Due_Amount>0) C
+ON AB.Loan_ID=C.Contract_ID
+WHERE ((Schedule_Update_Date<Loan_Update_Date AND Payment_Due_Date<Loan_Update_Date)
+OR (Schedule_Update_Date>Loan_Update_Date))
+AND Payment_Due_Date<='2020-09-30'
+)
+GROUP BY 1, 2))
+WHERE OK=0
+
+
+SELECT OK, OK2, COUNT(*) as obs
+FROM
+(SELECT Loan_ID, OK 
+FROM `amret-mfi-kh.sandbox.loan_kos`) A
+LEFT JOIN
+(SELECT Loan_ID, OK2
+FROM `amret-mfi-kh.sandbox.loan_kos_v2`) B
+ON A.Loan_ID=B.Loan_ID
+GROUP BY 1, 2
+ORDER BY 1, 2
+
+
+##### 30,736 loans over 196,295 are KO:
+##### 6,921 have interests paid < interests due  (OK=-1)
+##### 23,811 have interests paid> interests due (OK=1)
+##### 165,563 have paid=due (OK=0) (84.3%)
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.loan_interest_kos` 
+AS
+SELECT *
+FROM
+(
+SELECT *, CASE WHEN Loan_Currency_Code='USD' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount>0.1
+OR Loan_Currency_Code='KHR' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount>100  
+OR Loan_Currency_Code='THB' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount>1 THEN 1 
+WHEN Loan_Currency_Code='USD' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount<-0.1
+OR Loan_Currency_Code='KHR' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount<-100  
+OR Loan_Currency_Code='THB' AND Interest_Paid_Amount+Interest_Overdue_Amount-Interest_Due_Amount<-1 THEN -1 
+ELSE 0 END AS OK
+FROM
+(SELECT Loan_ID, Loan_Currency_Code, Loan_Disbursement_Date, Loan_Maturity_Date,
+Loan_End_Date,
+Capital_Disbursed_Amount, Loan_Restructuration_Flag, Loan_Status_Name,
+IFNULL(Capital_Paid_Amount,0) AS Capital_Paid_Amount, 
+IFNULL(Principal_Overdue_Amount,0) AS Principal_Overdue_Amount, 
+IFNULL(Principal_Outstanding_Amount, 0) AS Principal_Outstanding_Amount,
+IFNULL(Capital_Due_Amount,0) AS Capital_Due_Amount,
+IFNULL(Interest_Paid_Amount,0) AS Interest_Paid_Amount, 
+IFNULL(Interest_Overdue_Amount,0) AS Interest_Overdue_Amount, 
+IFNULL(Interest_Outstanding_Amount, 0) AS Interest_Outstanding_Amount,
+IFNULL(Interest_Due_Amount,0) AS Interest_Due_Amount
+FROM
+(
+SELECT * EXCEPT (LID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT Loan_ID, Loan_Disbursement_Date, Loan_Maturity_Date, Loan_Restructuration_Flag, 
+Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, Loan_Currency_Code
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') A
+LEFT JOIN
+(SELECT Contract_ID, 
+SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code='752' THEN Transaction_Amount ELSE 0 END) AS Penalty_Paid_Amount
+FROM `amret-mfi-kh.sandbox.transaction`WHERE Transaction_Type_Code IN ('420','423','434','750','751','752')
+GROUP BY 1) B
+ON A.Loan_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Contract_ID, SUM(Capital_Due_Amount) AS Capital_Due_Amount, SUM( Interest_Due_Amount) AS Interest_Due_Amount
+FROM 
+(SELECT * EXCEPT (Loan_ID)
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+Payment_Month,Schedule_Update_Date
+FROM
+(
+SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month,Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01') A
+INNER JOIN
+(SELECT Contract_ID AS CID, 
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS PMonth,
+MAX(Schedule_Update_Date) AS Last_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+GROUP BY 1, 2) B
+ON A.Contract_ID=B.CID AND A.Payment_Month=B.PMonth
+AND A.Schedule_Update_Date=B.Last_Date) A
+LEFT JOIN
+(SELECT Loan_ID, Loan_Disbursement_Date, Capital_Disbursed_Amount, Loan_Status_Name,
+Loan_Maturity_Date, Loan_End_Date
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') B
+ON A.Contract_ID=B.Loan_ID)
+WHERE Payment_Due_Date>Loan_Disbursement_Date
+AND ((Loan_Status_Name='CLOSED'  AND Payment_Due_Date<=Loan_End_Date)
+OR (Loan_Status_Name<>'CLOSED' AND Loan_Maturity_Date>'2020-09-30' AND Payment_Due_Date<='2020-09-30') 
+OR (Loan_Status_Name<>'CLOSED' AND Loan_Maturity_Date<='2020-09-30' AND Payment_Due_Date<=Loan_Maturity_Date))
+GROUP BY 1) C
+ON AB.Loan_ID=C.Contract_ID) ABC
+LEFT JOIN
+(SELECT Loan_ID AS LID, Loan_Balance_Date, Principal_Outstanding_Amount, Principal_Overdue_Amount, 
+Interest_Outstanding_Amount, Interest_Overdue_Amount, Penalty_Overdue_Amount 
+FROM `amret-mfi-kh.sandbox.loan_balance`) D
+ON ABC.Loan_ID=D.LID)))
+WHERE OK<>0
+
+### Patch to find missing instalments from previous schedules and fix 
+### some contract with paid>due (4,618)
+##### 6,921 have paid<due  (OK=-1)
+##### 20,405 have paid>due (OK=1)
+##### 168,969 have paid=due (OK=0) (86.1%)
+CREATE OR REPLACE TABLE `amret-mfi-kh.sandbox.loan_interest_kos_v2` 
+AS
+SELECT *
+FROM
+(
+SELECT * EXCEPT (Contract_ID) 
+FROM
+(SELECT * 
+FROM sandbox.loan_interest_kos) A
+LEFT JOIN
+(SELECT Contract_ID, 0 AS OK2
+FROM
+(SELECT Contract_ID, Interest_Paid_Amount, SUM(Interest_Due_Amount) AS Interest_Due_Amount
+FROM
+(
+SELECT Contract_ID, Payment_Due_Date, Interest_Paid_Amount, Interest_Due_Amount,
+Payment_Month, Schedule_Update_Date, Loan_Maturity_Date, Mismatch, Version
+FROM
+(SELECT Loan_ID, Loan_Maturity_Date, Interest_Paid_Amount, Interest_Paid_Amount-Interest_Due_Amount As Mismatch
+FROM `amret-mfi-kh.sandbox.loan_interest_kos` 
+WHERE OK=1) C
+LEFT JOIN
+(SELECT * EXCEPT (CID, PMonth, SU_Date)
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month, Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01') A
+LEFT JOIN
+(SELECT *, 
+COUNT(*) OVER (PARTITION BY CID, PMonth ORDER BY SU_Date DESC) AS Version
+FROM
+(
+SELECT Contract_ID AS CID, DATETIME_TRUNC(Payment_Due_Date, MONTH) AS PMonth,
+Schedule_Update_Date AS SU_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+GROUP BY 1, 2, 3)) B
+ON A.Contract_ID=B.CID AND A.Payment_Month=B.PMonth 
+AND A.Schedule_Update_Date=B.SU_Date) AB
+ON C.Loan_ID=AB.Contract_ID)
+WHERE Payment_Due_Date<=Loan_Maturity_Date
+AND (Version=1 OR (Version=2 AND Mismatch=Interest_Due_Amount))
+GROUP BY 1, 2)
+WHERE Interest_Paid_Amount=Interest_Due_Amount) B
+ON A.Loan_ID=B.Contract_ID)

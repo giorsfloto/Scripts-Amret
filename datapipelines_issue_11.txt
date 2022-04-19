@@ -1,0 +1,555 @@
+#### step1: creation of amret-kh.raw_sandbox.schedule_legacy_pr60
+
+SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount,
+Schedule_Update_Date, Instalment_Status_Code,  1 AS R_Sequential_Number, --- ficticious R_Sequential_Number=1 so to select always Amret cleaned schedules
+COUNT(*) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Instalment_Sequence_Number
+FROM
+(SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+(Capital_Due_Final+Interest_Due_Final) AS Total_Due_Amount,
+Capital_Due_Final AS Capital_Due_Amount, Interest_Due_Final AS Interest_Due_Amount,
+Schedule_Update_Date, Instalment_Status_Code, R_Sequential_Number, 
+Contract_Capital_OK_Flag, Consistency_Flag
+FROM
+(
+SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+				Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+				Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+				Capital_Due_Final AS Capital_Due_Amount, Interest_Due_Final AS Interest_Due_Amount,
+				Schedule_Update_Date, Instalment_Status_Code, R_Sequential_Number,
+                CASE WHEN Version=1 AND UPPER(Loan_Status_Name)<>'CLOSED' AND Payment_Due_Date>Last_Available_Date 
+                THEN Capital_Due_Amount ELSE Capital_Due_Final END AS Capital_Due_Final,--- we add future instalments for outstanding loans
+				CASE WHEN Version=1 AND UPPER(Loan_Status_Name)<>'CLOSED' AND Payment_Due_Date>Last_Available_Date  
+                THEN Interest_Due_Amount ELSE Interest_Due_Final END AS Interest_Due_Final,
+				MAX(Capital_OK_Flag) OVER (PARTITION BY Contract_ID) AS Contract_Capital_OK_Flag, 
+                Consistency_Flag	
+FROM
+(
+SELECT *,         CASE WHEN (Schedule_Currency_Code='USD'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated2)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419- Capital_Due_Calculated2)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated2 )>100)
+				  THEN 0 ELSE Capital_Due_Cleaned2 END as Capital_Due_Final,                 --- if Capital not OK, we put 0, anyway we won't select them
+				  
+				  CASE WHEN (Schedule_Currency_Code='USD'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated2)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419- Capital_Due_Calculated2)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated2 )>100)
+				  THEN 0 ELSE 1 END as Capital_OK_flag,
+				  
+				  CASE WHEN (Schedule_Currency_Code='USD'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>100)
+				  THEN Interest_Due_Amount ELSE Interest_Due_Cleaned2 END as Interest_Due_Final, --- if Interest not OK, we take original amounts
+				  
+				  CASE WHEN (Schedule_Currency_Code='USD'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated2)>100)
+				  THEN 0 ELSE 1 END as Interest_OK_Flag
+				 
+FROM
+(
+SELECT *, SUM(Capital_Due_Cleaned2) OVER (PARTITION BY Contract_ID) AS Capital_Due_Calculated2, -- total sum of capital due calculated with version 2 for each contract
+          SUM(Interest_Due_Cleaned2) OVER (PARTITION BY Contract_ID) AS Interest_Due_Calculated2 -- total sum of interest due calculated with version 2 for each contract
+FROM
+(
+SELECT *, CASE WHEN Version=2 
+          AND NOT (Restructuration_Covid_Flag=TRUE AND Schedule_Update_Date<Loan_Update_Date AND Payment_Due_Date>Loan_Update_Date) -- we exclude instalments restructured due to COVID
+               AND((UPPER(Loan_Status_Name)='CLOSED' AND Payment_Due_Date<=Loan_Maturity_Date) --- for closed loans we take capital instalments due up to Maturity_Date
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date>Last_Available_Date AND Payment_Due_Date<=Last_Available_Date) -- for outstanding we take only capital due up to end of period
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date<=Last_Available_Date AND Payment_Due_Date<=Loan_Maturity_Date))
+          AND ((Schedule_Currency_Code='USD' AND ABS(Capital_Due_Amount-Capital_Mismatch)<0.1)
+                                    OR (Schedule_Currency_Code='THB' AND ABS(Capital_Due_Amount-Capital_Mismatch)<1)
+									OR (Schedule_Currency_Code='KHR' AND ABS(Capital_Due_Amount-Capital_Mismatch)<100))
+                                    THEN Capital_Due_Amount ELSE Capital_Due_Cleaned END AS Capital_Due_Cleaned2, -- if one older Instalment is equal to Mismatch we assume it is still valid, there migth be more than one, this algorithm might be improved
+          CASE WHEN Version=2 
+		  AND NOT (Restructuration_Covid_Flag=TRUE AND Schedule_Update_Date<Loan_Update_Date AND Payment_Due_Date>Loan_Update_Date) -- we exclude instalments restructured due to COVID
+               AND((UPPER(Loan_Status_Name)='CLOSED' AND Payment_Due_Date<=Loan_End_Date) --- for closed loans we take interest due up to actual end date
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date>Last_Available_Date AND Payment_Due_Date<=Last_Available_Date)  -- for outstanding we take only interest due up to end of period
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date<=Last_Available_Date AND Payment_Due_Date<=Loan_Maturity_Date))
+		  AND ((Schedule_Currency_Code='USD' AND ABS(Interest_Due_Amount-Interest_Mismatch)<0.1)
+                                    OR (Schedule_Currency_Code='THB' AND ABS(Interest_Due_Amount-Interest_Mismatch)<1)
+									OR (Schedule_Currency_Code='KHR' AND ABS(Interest_Due_Amount-Interest_Mismatch)<100))
+									THEN Interest_Due_Amount ELSE Interest_Due_Cleaned END AS Interest_Due_Cleaned2
+FROM
+(
+SELECT *, CASE WHEN (Schedule_Currency_Code='USD'   -- if Capital_Paid+Capital Overdue end-Capital Overdue start-Capital Due Calculated > threshold then Capital_Calculated NOT OK
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated)>100) THEN 0 ELSE 1 END as Capital_OK,
+				  Capital_Paid_Amount+Principal_Overdue_Amount_lstdyavlbl-Principal_Overdue_Amount_0419-Capital_Due_Calculated AS Capital_Mismatch,
+				  CASE WHEN (Schedule_Currency_Code='USD'  -- if Interest_Paid+Interest Overdue end-Interest Overdue start-Interest Due Calculated > threshold then NOT OK
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated)>0.1)
+                  OR (Schedule_Currency_Code='THB'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated)>1)
+                  OR (Schedule_Currency_Code='KHR'
+                  AND ABS(Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated)>100) THEN 0 ELSE 1 END as Interest_OK,
+				  Interest_Paid_Amount+Interest_Overdue_Amount_lstdyavlbl-Interest_Overdue_Amount_0419-Interest_Due_Calculated AS Interest_Mismatch
+FROM
+(
+SELECT *, SUM(Capital_Due_Cleaned) OVER (PARTITION BY Contract_ID) AS Capital_Due_Calculated, -- total sum of capital due calculated for each contract according to step below
+          SUM(Interest_Due_Cleaned) OVER (PARTITION BY Contract_ID) AS Interest_Due_Calculated -- total sum of interest due calculated for each contract according to step below
+FROM
+(
+SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount, Schedule_Update_Date,
+Instalment_Status_Code, R_Sequential_Number, Payment_Month, Version,
+Loan_Disbursement_Date, Loan_Update_Date, Loan_Maturity_Date, Restructuration_Covid_Flag,
+ Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, 
+ Principal_Outstanding_Amount_0419, Principal_Overdue_Amount_0419,
+ Interest_Outstanding_Amount_0419, Interest_Overdue_Amount_0419,
+ Principal_Outstanding_Amount_lstdyavlbl, Principal_Overdue_Amount_lstdyavlbl,
+ Interest_Outstanding_Amount_lstdyavlbl, Interest_Overdue_Amount_lstdyavlbl,
+ Capital_Start_Amount,
+ IFNULL(Capital_Paid_Amount,0) AS Capital_Paid_Amount,
+ IFNULL(Interest_Paid_Amount,0) AS Interest_Paid_Amount,
+ CASE WHEN (Schedule_Currency_Code='USD' AND
+                   ABS(Capital_Start_Amount-Principal_Outstanding_Amount_lstdyavlbl-IFNULL(Capital_Paid_Amount,0))>0.1)
+            OR (Schedule_Currency_Code='THB' AND
+                   ABS(Capital_Start_Amount-Principal_Outstanding_Amount_lstdyavlbl-IFNULL(Capital_Paid_Amount,0))>1)
+            OR (Schedule_Currency_Code='KHR' AND
+                   ABS(Capital_Start_Amount-Principal_Outstanding_Amount_lstdyavlbl-IFNULL(Capital_Paid_Amount,0))>100)
+     THEN 0 ELSE 1 END AS Consistency_Flag, -- consistency_flag=1 when Outstanding at start of period-Principal Outsanding Amount end = Capital Paid Amount during the period, outstanding and payment data are consistent, we can trust payment data and use it to deduct valid schedules during the same period. Consistency rate for loans with instalemnts during the period is 97.78%
+     CASE WHEN  Version=1 -- we take only latest schedule for each month of payment
+	           AND NOT (Restructuration_Covid_Flag=TRUE AND Schedule_Update_Date<Loan_Update_Date AND Payment_Due_Date>Loan_Update_Date) -- we exclude instalments restructured due to COVID
+               AND((UPPER(Loan_Status_Name)='CLOSED' AND Payment_Due_Date<=Loan_Maturity_Date) --- for closed loans we take capital instalments due up to Maturity_Date
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date>Last_Available_Date AND Payment_Due_Date<=Last_Available_Date) -- for outstanding we take only capital due up to end of period
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date<=Last_Available_Date AND Payment_Due_Date<=Loan_Maturity_Date)) --- few cases (around 300/11 M records), likely restructuring where Maturity_Date was not updated
+               THEN Capital_Due_Amount ELSE 0 END AS Capital_Due_Cleaned, 
+	CASE WHEN  Version=1 -- we take only latest schedule for each month
+	           AND NOT (Restructuration_Covid_Flag=TRUE AND Schedule_Update_Date<Loan_Update_Date AND Payment_Due_Date>Loan_Update_Date) -- we exclude instalments restructured due to COVID
+               AND((UPPER(Loan_Status_Name)='CLOSED' AND Payment_Due_Date<=Loan_End_Date) --- for closed loans we take interest due up to actual end date
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date>Last_Available_Date AND Payment_Due_Date<=Last_Available_Date)  -- for outstanding we take only interest due up to end of period
+               OR (UPPER(Loan_Status_Name)<>'CLOSED' AND Loan_Maturity_Date<=Last_Available_Date AND Payment_Due_Date<=Loan_Maturity_Date))
+               THEN Interest_Due_Amount ELSE 0 END AS Interest_Due_Cleaned, Last_Available_Date
+
+FROM
+
+(SELECT * EXCEPT (Company)
+FROM
+(SELECT  R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount, Schedule_Update_Date,
+Instalment_Status_Code, R_Sequential_Number, Payment_Month, Version,
+Loan_Disbursement_Date, Loan_Update_Date, Loan_Maturity_Date, Restructuration_Covid_Flag,
+ Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, 
+ Principal_Outstanding_Amount_0419, Principal_Overdue_Amount_0419,
+ Interest_Outstanding_Amount_0419, Interest_Overdue_Amount_0419,
+ IFNULL(Principal_Outstanding_Amount_lstdyavlbl, 0) AS Principal_Outstanding_Amount_lstdyavlbl,
+ IFNULL(Principal_Overdue_Amount_lstdyavlbl,0) AS Principal_Overdue_Amount_lstdyavlbl,
+ IFNULL(Interest_Outstanding_Amount_lstdyavlbl,0) As Interest_Outstanding_Amount_lstdyavlbl,
+ IFNULL(Interest_Overdue_Amount_lstdyavlbl,0) AS Interest_Overdue_Amount_lstdyavlbl,
+ CASE WHEN Loan_Disbursement_Date>='2019-05-01' THEN Capital_Disbursed_Amount ELSE Principal_Outstanding_Amount_0419
+END AS Capital_Start_Amount  ---- Capital Start Amount = Principal Outstanding at start of period or Capital Disbursed Amount if disbursed after 
+ FROM
+(
+SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount, Schedule_Update_Date,
+Instalment_Status_Code, R_Sequential_Number, Payment_Month, Version,
+Loan_Disbursement_Date, Loan_Update_Date, Loan_Maturity_Date, Restructuration_Covid_Flag,
+ Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name,
+ IFNULL(Principal_Outstanding_Amount_0419, 0) AS Principal_Outstanding_Amount_0419,
+ IFNULL(Principal_Overdue_Amount_0419,0) AS Principal_Overdue_Amount_0419,
+ IFNULL(Interest_Outstanding_Amount_0419,0) As Interest_Outstanding_Amount_0419,
+ IFNULL(Interest_Overdue_Amount_0419,0) AS Interest_Overdue_Amount_0419
+ FROM
+(
+SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount, Schedule_Update_Date,
+Instalment_Status_Code, R_Sequential_Number, Payment_Month, Version,
+Loan_Disbursement_Date, Loan_Update_Date, Loan_Maturity_Date, Restructuration_Covid_Flag,
+Loan_End_Date, IFNULL(Capital_Disbursed_Amount,0) AS Capital_Disbursed_Amount, Loan_Status_Name
+FROM
+(SELECT *,COUNT(*) OVER (PARTITION BY Contract_ID, Payment_Month ORDER BY Schedule_Update_Date DESC) AS Version -- 1=latest schedule created for that month... n=oldest schedule created for that month
+FROM
+(SELECT R_Schedule_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Department_ID, Customer_ID, Contract_ID, Contract_Type_Code, Payment_Frequency_Name,
+Frequency_Code, Payment_Due_Date, Schedule_Currency_Code,
+Total_Due_Amount, Capital_Due_Amount, Interest_Due_Amount, Schedule_Update_Date,
+Instalment_Status_Code, R_Sequential_Number,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month,
+FROM
+`amret-kh.dwh_legacy.schedule_staging`)) A
+INNER JOIN                                             ---- we exclude schedules for loans not in loan table, we assume these loans were not disbursed
+(SELECT * EXCEPT (LID)
+FROM
+(SELECT Loan_ID, Loan_Disbursement_Date, Loan_Maturity_Date, Restructuration_Covid_Flag,
+ Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, 
+ FROM
+ `amret-kh.dwh_legacy.loan`
+ WHERE R_Sequential_Number=1) B0
+LEFT JOIN
+(SELECT Loan_ID AS LID, MIN(Loan_Update_Date) AS Loan_Update_Date --- for COVID restructured loans first Update_Date is the date of restructuring
+ FROM
+ `amret-kh.dwh_legacy.loan`
+ GROUP BY 1) B1
+ON B0.Loan_ID=B1.LID) B
+ON A.Contract_ID=B.Loan_ID
+) AB
+LEFT JOIN
+(SELECT Loan_ID,
+Principal_Outstanding_Amount AS Principal_Outstanding_Amount_0419, Principal_Overdue_Amount AS Principal_Overdue_Amount_0419,
+Interest_Outstanding_Amount AS Interest_Outstanding_Amount_0419, Interest_Overdue_Amount AS Interest_Overdue_Amount_0419
+FROM
+`amret-kh.dwh_legacy.loan_balance`
+WHERE Loan_Balance_Date='2019-04-30') C --- situation the end of day before beginning of the data time frame (01/05/2019)
+ON AB.Contract_ID=C.Loan_ID
+) ABC
+LEFT JOIN
+(SELECT * EXCEPT (Last_Available_Date)
+ FROM
+(SELECT Loan_ID,
+ Principal_Outstanding_Amount AS Principal_Outstanding_Amount_lstdyavlbl, Principal_Overdue_Amount AS Principal_Overdue_Amount_lstdyavlbl,
+ Interest_Outstanding_Amount AS Interest_Outstanding_Amount_lstdyavlbl, Interest_Overdue_Amount AS Interest_Overdue_Amount_lstdyavlbl,
+ Penalty_Overdue_Amount AS Penalty_Overdue_Amount_lstdyavlbl, Loan_Balance_Date, MAX(Loan_Balance_Date) OVER() AS Last_Available_Date
+ FROM
+ `amret-kh.dwh_legacy.loan_balance`)
+WHERE Loan_Balance_Date=Last_Available_Date) D   ---- we select last available loan balances
+ ON ABC.Contract_ID=D.Loan_ID) ABCD 
+ LEFT JOIN
+(SELECT Company_Name AS Company, MAX(Loan_Balance_Date) AS Last_Available_Date
+ FROM
+ `amret-kh.dwh_legacy.loan_balance` 
+ GROUP BY 1) E
+ON ABCD.Company_Name=E.Company) ABCDE
+LEFT JOIN
+ (SELECT CID,
+ SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+ SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+FROM
+(SELECT Company_Name, Contract_ID AS CID,Transaction_Type_Code, Transaction_DateTime, Transaction_Amount
+ FROM
+ `amret-kh.dwh_legacy.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751')) F
+ LEFT JOIN
+(SELECT Company_Name, MAX(Loan_Balance_Date) AS Last_Available_Date
+ FROM
+ `amret-kh.dwh_legacy.loan_balance` 
+ GROUP BY 1) G
+ ON F.Company_Name=G.Company_Name
+ WHERE DATE(Transaction_DateTime)>='2019-05-01' AND DATE(Transaction_DateTime)<=Last_Available_Date ---- transactions done between 1/5/2019 and loan balances last available date
+ GROUP BY 1) FG
+ ON ABCDE.Contract_ID=FG.CID 
+ WHERE Payment_Due_Date>='2019-05-01' AND Payment_Due_Date>Loan_Disbursement_Date))))))
+WHERE Capital_Due_Final>0 OR Interest_Due_Cleaned2>0 OR --- we select either capital payments validated and all interest payments
+(Version=1 AND UPPER(Loan_Status_Name)<>'CLOSED' AND Payment_Due_Date>Last_Available_Date)) -- and future instalments with Version=1 for outstanding loans
+)
+WHERE Contract_Capital_OK_Flag>0 AND Consistency_Flag>0
+
+#### step2: overwriting of table bank-b.raw_sch_legacy
+SELECT
+  'dwh_legacy.schedule' AS R_BQ_Table,
+  R_Schedule_Record_ID,
+  R_Batch_ID,
+  R_Batch_DateTime,
+  Company_Name,
+  Country_Code,
+  Department_ID,
+  Customer_ID,
+  Contract_ID,
+  Contract_Type_Code,
+  Payment_Frequency_Name,
+  Frequency_Code,
+  Instalment_Sequence_Number,
+  Payment_Due_Date,
+  Schedule_Currency_Code,
+  Total_Due_Amount,
+  Capital_Due_Amount,
+  Interest_Due_Amount,
+  Schedule_Update_Date,
+  Instalment_Status_Code,
+FROM
+  `amret-kh.raw_sandbox.schedule_legacy_pr60`
+WHERE
+  Contract_ID NOT IN (
+  SELECT
+    R10_Loan_ID
+  FROM
+    `amret-kh.meta.r10_r18_loan_ids`)
+	
+#### step3: creation of amret-kh.raw_sandbox.event_legacy_pr60
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid_Amount,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid_Amount,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid_Amount,
+	 
+	 CASE WHEN Capital_Decreases>0 THEN 1 ELSE 0 END AS Capital_Decrease_Flag
+	 
+FROM
+(SELECT *,
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid
+	 
+FROM
+(
+SELECT *,  
+     CASE WHEN LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Total_Due,	 
+	 CASE WHEN LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Capital_Due,
+	 CASE WHEN LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Interest_Due	 
+FROM
+(SELECT *, 
+        CASE WHEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum>0 THEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum ELSE 0 END AS Total_Due,
+		CASE WHEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum>0 THEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum ELSE 0 END AS Capital_Due,
+		CASE WHEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum>0 THEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum ELSE 0 END AS Interest_Due
+FROM
+(SELECT *, 
+        CASE WHEN LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Total_Due_Amount_Cum,
+        CASE WHEN LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Capital_Due_Amount_Cum,
+		CASE WHEN LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Interest_Due_Amount_Cum
+
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number,
+       Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, 
+	   SUM(Capital_Due_Amount+Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Total_Due_Amount_Cum,
+	   Capital_Due_Amount,
+       SUM(Capital_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Capital_Due_Amount_Cum,
+       Interest_Due_Amount,
+	   SUM(Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Interest_Due_Amount_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number, Capital_Due_Amount, 
+Interest_Due_Amount
+FROM 
+`amret-kh.raw_sandbox.schedule_legacy_pr60`
+UNION ALL
+SELECT Loan_ID AS Contract_ID, Loan_Balance_Date AS Payment_Due_Date, 0 AS Instalment_Sequence_Number,
+Principal_Overdue_Amount  AS Capital_Due_Amount, Interest_Overdue_Amount AS Interest_Overdue_Amount 
+FROM 
+`amret-kh.dwh_legacy.loan_balance` 
+WHERE Loan_Balance_Date='2019-04-30' AND (Principal_Overdue_Amount>0 OR Interest_OverDue_Amount>0))
+WHERE Contract_ID='LD1722009570')) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Event_Date, 
+       Total_Paid_Amount, Total_Paid_Amount_Cum,
+       CASE WHEN LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Total_Paid_Amount_Cum,
+       Capital_Paid_Amount, Capital_Paid_Amount_Cum,
+       CASE WHEN LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Capital_Paid_Amount_Cum,
+	   Interest_Paid_Amount, Interest_Paid_Amount_Cum,
+       CASE WHEN LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Interest_Paid_Amount_Cum, Capital_Decreases
+
+FROM
+(SELECT *, SUM(Total_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Total_Paid_Amount_Cum,
+           SUM(Capital_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Capital_Paid_Amount_Cum,
+           SUM(Interest_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Interest_Paid_Amount_Cum
+FROM
+(SELECT Contract_ID, CAST(Transaction_DateTime AS DATE) AS Event_Date,
+                     SUM(Transaction_Amount) AS Total_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+					 SUM(CASE WHEN Transaction_Type_Code='423' THEN 1 ELSE 0 END) AS Capital_Decreases
+ FROM 
+ `amret-kh.dwh_legacy.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751') AND DATE(Transaction_DateTime)>='2019-05-01'
+ GROUP BY 1, 2))) B
+ ON A.Contract_ID=B.CID)
+ WHERE Total_Paid_Amount_Cum>Prev_Total_Due_Amount_Cum AND Prev_Total_Paid_Amount_Cum<Total_Due_Amount_Cum))
+ WHERE Total_Paid>0.00001
+ 
+#### step4: overwriting of table bank-b.raw_eve_legacy
+SELECT 'amret-kh:dwh_legacy.transaction' AS R_BQ_Table,
+       'R10_legacy' AS R_Batch_ID,
+       CAST (NULL AS STRING) AS R_Event_Record_ID,
+       CURRENT_DATETIME() AS R_Batch_DateTime,
+       'ADVANS' AS Company_Name,
+       'KH' AS Country_Code,
+       CAST(NULL AS STRING) AS Department_ID,
+       CAST(NULL AS STRING) AS Customer_ID,
+       Contract_ID,
+       CAST(NULL AS STRING) AS Contract_Type,
+       Instalment_Sequence_Number,
+       CAST(NULL AS STRING) AS Transaction_ID,
+       CASE WHEN Capital_Decrease_Flag>0 THEN 'EP' ELSE NULL END AS Event_Code,
+       Payment_Due_Date,
+       CAST(NULL AS STRING) AS Event_Currency_Code,
+	   CAST(Event_Date AS TIMESTAMP) AS Event_DateTime,
+       Total_Paid_Amount,
+       Capital_Paid_Amount,
+       Interest_Paid_Amount,
+       CAST(0 AS FLOAT64) AS Penalty_Paid_Amount,
+       CAST(0 AS FLOAT64) AS Capital_Remaining_Amount,
+       CAST(0 AS FLOAT64) AS Interest_Remaining_Amount,
+       CAST(NULL AS BOOLEAN) AS Early_Termination_Flag
+
+--- loans not migrated from R10     
+FROM (SELECT *
+FROM  `amret-kh.raw_sandbox.event_legacy_pr60`
+WHERE
+  Contract_ID NOT IN (
+  SELECT
+    R10_Loan_ID
+  FROM
+    `amret-kh.meta.r10_r18_loan_ids`)
+UNION ALL
+
+--- payments in R10 of instalments of loans migrated to R18
+SELECT Contract_ID, Instalment_Sequence_Number, Payment_Due_Date, Event_Date, 
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum
+	 ELSE Total_Paid_Amount END AS Total_Paid_Amount,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid_Amount,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid_Amount,
+	 
+	 CASE WHEN Capital_Decreases>0 THEN 1 ELSE 0 END AS Capital_Decrease_Flag
+	 
+FROM
+(SELECT *,
+     CASE WHEN Prev_Total_Due>0 AND Total_Paid_Amount>Prev_Total_Due THEN Prev_Total_Due  --- if there is some due and total paid > total due, then total paid = total due (first piece of late payment on 2 instalments)
+     WHEN Prev_Total_Due=0 AND Total_Paid_Amount_Cum>Total_Due_Amount_Cum THEN Total_Due_Amount --- if there is no due, but total paid cumul. >  total due cumul. --> total due.
+     WHEN Prev_Total_Paid_Amount_Cum<Prev_Total_Due_Amount_Cum THEN Total_Paid_Amount_Cum-Prev_Total_Due_Amount_Cum -- if there is no more due, but before the payment there was --> total paid cumul-prev total due cumul. (second piece of late payment on 2 instalments)
+	 ELSE Total_Paid_Amount END AS Total_Paid,
+	 
+	 CASE WHEN Prev_Capital_Due>0 AND Capital_Paid_Amount>Prev_Capital_Due THEN Prev_Capital_Due
+     WHEN Prev_Capital_Due=0 AND Capital_Paid_Amount_Cum>Capital_Due_Amount_Cum THEN Capital_Due_Amount
+     WHEN Prev_Capital_Paid_Amount_Cum<Prev_Capital_Due_Amount_Cum THEN Capital_Paid_Amount_Cum-Prev_Capital_Due_Amount_Cum
+	 ELSE Capital_Paid_Amount END AS Capital_Paid,
+	 
+	 CASE WHEN Prev_Interest_Due>0 AND Interest_Paid_Amount>Prev_Interest_Due THEN Prev_Interest_Due
+     WHEN Prev_Interest_Due=0 AND Interest_Paid_Amount_Cum>Interest_Due_Amount_Cum THEN Interest_Due_Amount
+     WHEN Prev_Interest_Paid_Amount_Cum<Prev_Interest_Due_Amount_Cum THEN Interest_Paid_Amount_Cum-Prev_Interest_Due_Amount_Cum
+	 ELSE Interest_Paid_Amount END AS Interest_Paid
+	 
+FROM
+(
+SELECT *,  
+     CASE WHEN LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Total_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Total_Due,	 
+	 CASE WHEN LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Capital_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Capital_Due,
+	 CASE WHEN LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) IS NULL THEN 0
+     ELSE LAG(Interest_Due) OVER (Partition BY Contract_ID, Payment_Due_Date ORDER BY Event_Date) END AS Prev_Interest_Due	 
+FROM
+(SELECT *, 
+        CASE WHEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum>0 THEN Total_Due_Amount_Cum-Total_Paid_Amount_Cum ELSE 0 END AS Total_Due,
+		CASE WHEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum>0 THEN Capital_Due_Amount_Cum-Capital_Paid_Amount_Cum ELSE 0 END AS Capital_Due,
+		CASE WHEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum>0 THEN Interest_Due_Amount_Cum-Interest_Paid_Amount_Cum ELSE 0 END AS Interest_Due
+FROM
+(SELECT *, 
+        CASE WHEN LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Total_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Total_Due_Amount_Cum,
+        CASE WHEN LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Capital_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Capital_Due_Amount_Cum,
+		CASE WHEN LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+        ELSE LAG(Interest_Due_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) END AS Prev_Interest_Due_Amount_Cum
+
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number,
+       Capital_Due_Amount+Interest_Due_Amount AS Total_Due_Amount, 
+	   SUM(Capital_Due_Amount+Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Total_Due_Amount_Cum,
+	   Capital_Due_Amount,
+       SUM(Capital_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Capital_Due_Amount_Cum,
+       Interest_Due_Amount,
+	   SUM(Interest_Due_Amount) OVER (PARTITION BY Contract_ID ORDER BY Payment_Due_Date) AS Interest_Due_Amount_Cum
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Instalment_Sequence_Number, Capital_Due_Amount, 
+Interest_Due_Amount
+FROM `amret-kh.raw.sch_20210303`
+WHERE Payment_Due_Date>'2019-04-30' --- we don't have transactions before 01/05/2019
+UNION ALL
+SELECT R18_Loan_ID AS Contract_ID, Payment_Due_Date, Instalment_Sequence_Number, Capital_Due_Amount, Interest_Overdue_Amount
+FROM
+(SELECT Loan_ID, Loan_Balance_Date AS Payment_Due_Date, 0 AS Instalment_Sequence_Number,
+Principal_Overdue_Amount  AS Capital_Due_Amount, Interest_Overdue_Amount AS Interest_Overdue_Amount 
+FROM 
+`amret-kh.dwh_legacy.loan_balance` 
+WHERE Loan_Balance_Date='2019-04-30' AND (Principal_Overdue_Amount>0 OR Interest_OverDue_Amount>0)) LBA
+INNER JOIN
+ (SELECT * FROM `amret-kh.meta.r10_r18_loan_ids`) LOAN_ID
+ON LBA.Loan_ID=LOAN_ID.R10_Loan_ID))) A
+LEFT JOIN
+(SELECT Contract_ID AS CID, Event_Date, 
+       Total_Paid_Amount, Total_Paid_Amount_Cum,
+       CASE WHEN LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Total_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Total_Paid_Amount_Cum,
+       Capital_Paid_Amount, Capital_Paid_Amount_Cum,
+       CASE WHEN LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Capital_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Capital_Paid_Amount_Cum,
+	   Interest_Paid_Amount, Interest_Paid_Amount_Cum,
+       CASE WHEN LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) IS NULL THEN 0 -- to fix first rows for each contract that otherwise are null
+       ELSE LAG(Interest_Paid_Amount_Cum) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) END AS Prev_Interest_Paid_Amount_Cum, Capital_Decreases
+
+FROM
+(SELECT *, SUM(Total_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Total_Paid_Amount_Cum,
+           SUM(Capital_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Capital_Paid_Amount_Cum,
+           SUM(Interest_Paid_Amount) OVER (PARTITION BY Contract_ID ORDER BY Event_Date) AS Interest_Paid_Amount_Cum
+FROM
+(SELECT R18_Loan_ID AS Contract_ID, Event_Date, Total_Paid_Amount, Capital_Paid_Amount, Interest_Paid_Amount, Capital_Decreases
+FROM
+(SELECT Contract_ID, CAST(Transaction_DateTime AS DATE) AS Event_Date,
+                     SUM(Transaction_Amount) AS Total_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+                     SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+					 SUM(CASE WHEN Transaction_Type_Code='423' THEN 1 ELSE 0 END) AS Capital_Decreases
+ FROM 
+ `amret-kh.dwh_legacy.transaction`
+ WHERE Transaction_Type_Code IN ('420','423','434','750','751') AND DATE(Transaction_DateTime)>='2019-05-01'
+ GROUP BY 1, 2) TXN
+ INNER JOIN
+ (SELECT * FROM `amret-kh.meta.r10_r18_loan_ids`) LOAN_ID
+ON TXN.Contract_ID=LOAN_ID.R10_Loan_ID))) B
+ ON A.Contract_ID=B.CID)
+ WHERE Total_Paid_Amount_Cum>Prev_Total_Due_Amount_Cum --- if Total_Paid_Amount_Cum<=Prev_Total_Due_Amount_Cum it means the payment refers to a previous instalment
+ AND Prev_Total_Paid_Amount_Cum<Total_Due_Amount_Cum)) --- if Prev_Total_Paid_Amount_Cum>=Total_Due_Amount_Cum it means the payment refers to a later instalment
+ WHERE Total_Paid>0.00001) --- we clean rounding issues

@@ -1,0 +1,237 @@
+########## Schedule 13,160,741 obs
+
+#### The key is Contract_ID/Payment_Due_Date
+SELECT COUNT(DISTINCT(CONCAT(Contract_ID,CAST(PAyment_Due_Date AS STRING)))) AS Contracts_PaymentDates,
+COUNT(DISTINCT(CONCAT(Contract_ID,CAST(PAyment_Due_Date AS STRING),CAST(Schedule_Update_Date AS STRING)))) AS Contracts_Payment_UpdateDates,
+COUNT(DISTINCT Contract_ID) as contracts,
+COUNT(*) as obs 
+FROM `amret-mfi-kh.sandbox.schedule` 
+
+#### only 2,791,966 instalments are in the required period 
+SELECT SUM(CASE WHEN Payment_Due_Date>='2019-04-01' AND Payment_Due_Date<='2020-03-31' THEN 1 ELSE 0 END) AS TimeOK,
+COUNT(*) as obs, 
+SUM(CASE WHEN Payment_Due_Date>='2019-04-01' AND Payment_Due_Date<='2020-03-31' THEN 1 ELSE 0 END)/COUNT(*) as Perc_TimeOK
+FROM `amret-mfi-kh.sandbox.schedule` 
+
+#### 3,093 missing instalments over 4,415,860
+SELECT *
+FROM
+(
+WITH contract_months AS (
+  SELECT Contract_ID, First_Payment_Month, 
+  Last_Payment_Month, Month
+  FROM (
+    SELECT Contract_ID, 
+	DATE_TRUNC(MIN(Payment_Due_Date),MONTH) AS First_Payment_Month,
+    DATE_TRUNC(MAX(Payment_Due_Date), MONTH) AS Last_Payment_Month 
+    FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-04-01' AND Payment_Due_Date<='2020-09-30'
+GROUP BY 1
+  ), UNNEST(GENERATE_DATE_ARRAY(First_Payment_Month, Last_Payment_Month, INTERVAL 1 MONTH)) Month
+),
+instalment_months AS(
+     SELECT Contract_ID AS CID, DATE_TRUNC(Payment_Due_Date,MONTH) AS Instalment_Month,
+     COUNT(*) as instalments
+     FROM `amret-mfi-kh.sandbox.schedule` 
+     WHERE Payment_Due_Date>='2019-04-01' AND Payment_Due_Date<='2020-09-30'
+	   GROUP BY 1, 2)
+SELECT Contract_ID, First_Payment_Month, Last_Payment_Month, Month, 
+       instalments
+FROM contract_months A LEFT JOIN instalment_months
+ON Contract_ID=CID AND Month=Instalment_Month)
+WHERE Instalments IS NULL or Instalments=0
+
+########## Account 477,972 obs
+### Account_ID is the unique key
+SELECT COUNT(DISTINCT Account_ID) as ids, COUNT(*) as obs
+FROM `amret-mfi-kh.sandbox.account` 
+
+### 230 closed accounts (over 3,219) have Account_End_Date NULL
+SELECT Account_Status_Name, CASE WHEN Account_End_Date IS NULL THEN 0 ELSE 1 END AS With_Closing_Date, COUNT(*) as obs
+FROM `amret-mfi-kh.sandbox.account`
+GROUP BY 1, 2
+ORDER BY 1, 2
+
+### all 218,072 unique customers in account can be found in customer
+SELECT OK, COUNT(*) as customers
+FROM
+(SELECT Customer_ID
+FROM `amret-mfi-kh.sandbox.account`
+GROUP BY 1) A
+LEFT JOIN
+(SELECT Customer_ID, 1 as OK
+FROM `amret-mfi-kh.sandbox.customer`
+GROUP BY 1) B
+ON A.Customer_ID=B.Customer_ID
+GROUP BY 1
+ORDER BY 1
+
+### all 218,079 customers in loan are also in customer
+SELECT flag, COUNT(*) as obs
+FROM
+(SELECT Contract_ID 
+FROM `amret-mfi-kh.sandbox.schedule` 
+GROUP BY 1) A
+LEFT JOIN
+(SELECT Loan_ID, 1 as flag
+FROM `amret-mfi-kh.sandbox.loan` 
+GROUP BY 1) B
+ON A.Contract_ID=B.Loan_ID
+GROUP BY 1
+ORDER BY 1
+
+### 73 Repayment accounts in loan cannot be found in account
+SELECT flag, COUNT(*) as obs
+FROM
+(SELECT Repayment_Account_ID 
+FROM `amret-mfi-kh.sandbox.loan` 
+GROUP BY 1) A
+LEFT JOIN
+(SELECT Account_ID, 1 as flag
+FROM `amret-mfi-kh.sandbox.account` 
+GROUP BY 1) B
+ON A.Repayment_Account_ID=B.Account_ID
+GROUP BY 1
+ORDER BY 1
+
+
+#### all 212,526 customers with instalments between 1/4/2019 and 30/9/2020 can be found in customer
+SELECT OK, COUNT(*) as customers
+FROM
+(SELECT Customer_ID
+FROM `amret-mfi-kh.sandbox.schedule`
+WHERE Payment_Due_Date>='2019-04-01' AND Payment_Due_Date<='2020-09-30'
+GROUP BY 1) A
+LEFT JOIN
+(SELECT Customer_ID, 1 as OK
+FROM `amret-mfi-kh.sandbox.customer`
+GROUP BY 1) B
+ON A.Customer_ID=B.Customer_ID
+GROUP BY 1
+ORDER BY 1
+
+#### all 218,079 customers in loan are also in customer
+SELECT flag, COUNT(*) as obs
+FROM
+(SELECT Customer_ID 
+FROM `amret-mfi-kh.sandbox.loan` 
+GROUP BY 1) A
+LEFT JOIN
+(SELECT Customer_ID, 1 as flag
+FROM `amret-mfi-kh.sandbox.loan` 
+GROUP BY 1) B
+ON A.Customer_ID=B.Customer_ID
+GROUP BY 1
+ORDER BY 1
+
+########## Transaction 16,843,120 obs
+### payments between 1/3/2019 and 30/9/2020
+SELECT MIN(Transaction_DateTime) AS Min_Date, MAX(Transaction_DateTime) AS Max_Date
+FROM `amret-mfi-kh.sandbox.transaction` 
+
+SELECT *
+FROM
+(SELECT Loan_ID, Loan_Currency_Code, Loan_Disbursement_Date, Capital_Disbursed_Amount,
+Loan_Restructuration_Flag, Loan_Status_Name,
+IFNULL(Capital_Paid_Amount,0) AS Capital_Paid_Amount, 
+IFNULL(Principal_Overdue_Amount,0) AS Principal_Overdue_Amount, 
+IFNULL(Principal_Outstanding_Amount, 0) AS Principal_Outstanding_Amount,
+IFNULL(Capital_Due_Amount,0) AS Capital_Due_Amount,
+FROM
+(
+SELECT * EXCEPT (LID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT * EXCEPT (Contract_ID)
+FROM
+(SELECT Loan_ID, Loan_Disbursement_Date, Loan_Restructuration_Flag,
+Loan_End_Date, Capital_Disbursed_Amount, Loan_Status_Name, Loan_Currency_Code
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') A
+LEFT JOIN
+(SELECT Contract_ID, 
+SUM(CASE WHEN Transaction_Type_Code IN ('420','423','750') THEN Transaction_Amount ELSE 0 END) AS Capital_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code IN ('434','751') THEN Transaction_Amount ELSE 0 END) AS Interest_Paid_Amount,
+SUM(CASE WHEN Transaction_Type_Code='752' THEN Transaction_Amount ELSE 0 END) AS Penalty_Paid_Amount
+FROM `amret-mfi-kh.sandbox.transaction`WHERE Transaction_Type_Code IN ('420','423','434','750','751','752')
+GROUP BY 1) B
+ON A.Loan_ID=B.Contract_ID) AB
+LEFT JOIN
+(SELECT Contract_ID, SUM(Capital_Due_Amount) AS Capital_Due_Amount, SUM( Interest_Due_Amount) AS Interest_Due_Amount
+FROM 
+(SELECT * EXCEPT (Loan_ID)
+FROM
+(SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+Payment_Month,Schedule_Update_Date
+FROM
+(
+SELECT Contract_ID, Payment_Due_Date, Capital_Due_Amount, Interest_Due_Amount,
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS Payment_Month,Schedule_Update_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01') A
+INNER JOIN
+(SELECT Contract_ID AS CID, 
+DATETIME_TRUNC(Payment_Due_Date, MONTH) AS PMonth,
+MAX(Schedule_Update_Date) AS Last_Date
+FROM `amret-mfi-kh.sandbox.schedule` 
+WHERE Payment_Due_Date>='2019-03-01'
+GROUP BY 1, 2) B
+ON A.Contract_ID=B.CID AND A.Payment_Month=B.PMonth
+AND A.Schedule_Update_Date=B.Last_Date) A
+LEFT JOIN
+(SELECT Loan_ID, Loan_Disbursement_Date, Capital_Disbursed_Amount,
+Loan_Maturity_Date
+FROM `amret-mfi-kh.sandbox.loan_20201107` 
+WHERE Loan_Disbursement_Date>='2019-03-01') B
+ON A.Contract_ID=B.Loan_ID)
+WHERE Payment_Due_Date>Loan_Disbursement_Date
+AND ((Loan_Maturity_Date>'2020-09-30' AND Payment_Due_Date<='2020-09-30') 
+OR (Loan_Maturity_Date<='2020-09-30' AND Payment_Due_Date<=Loan_Maturity_Date))
+GROUP BY 1) C
+ON AB.Loan_ID=C.Contract_ID) ABC
+LEFT JOIN
+(SELECT Loan_ID AS LID, Loan_Balance_Date, Principal_Outstanding_Amount, Principal_Overdue_Amount, 
+Interest_Outstanding_Amount, Interest_Overdue_Amount, Penalty_Overdue_Amount 
+FROM `amret-mfi-kh.sandbox.loan_balance`) D
+ON ABC.Loan_ID=D.LID))
+WHERE NOT (
+(Loan_Currency_Code='USD' AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount)<=0.1)
+OR (Loan_Currency_Code='KHR' AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount)<=100)  
+OR (Loan_Currency_Code='THB' AND ABS(Capital_Paid_Amount+Principal_Overdue_Amount-Capital_Due_Amount)<=1)        
+OR (Loan_Currency_Code='USD' AND ABS(Capital_Disbursed_Amount-Capital_Paid_Amount)<=0.1)
+OR (Loan_Currency_Code='KHR' AND ABS(Capital_Disbursed_Amount-Capital_Paid_Amount)<=100) 
+OR (Loan_Currency_Code='THB' AND ABS(Capital_Disbursed_Amount-Capital_Paid_Amount)<=1) 
+          OR Loan_Restructuration_Flag=TRUE
+		  )
+
+SELECT CASE WHEN ABS(Capital_Balance_20190228+Movmt-Capital_Balance_20200930)>0.1 THEN 0 ELSE 1 END AS OK,
+COUNT(*) AS obs
+FROM
+(
+SELECT IFNULL(AB.Account_ID, C.Account_ID) AS Account_ID, IFNULL(Capital_Balance_20190228,0) AS Capital_Balance_20190228, 
+IFNULL(Available_Balance_20190228,0) AS Available_Balance_20190228, 
+IFNULL(Movmt,0) AS Movmt,
+IFNULL(Capital_Balance_Amount,0) AS Capital_Balance_20200930, 
+IFNULL(Available_Balance_Amount,0) AS Available_Balance_20200930
+FROM
+(SELECT IFNULL(A.Account_ID, B.Customer_Account_ID) AS Account_ID, IFNULL(A.Capital_Balance_Amount,0) AS Capital_Balance_20190228, 
+IFNULL(Available_Balance_Amount,0) AS Available_Balance_20190228, 
+IFNULL(Movmt,0) AS Movmt
+FROM
+(SELECT Account_ID, Capital_Balance_Amount, Available_Balance_Amount
+FROM `amret-mfi-kh.sandbox.account_balance_20190228`) A
+FULL JOIN
+(SELECT Customer_Account_ID, 
+SUM(CASE WHEN Transaction_Type_Code='213' THEN Transaction_Amount 
+         WHEN DbCr_Code='Cr' THEN Transaction_Amount     
+         ELSE Transaction_Amount*-1 END) AS Movmt
+FROM `amret-mfi-kh.sandbox.transaction` 
+GROUP BY 1) B
+ON A.Account_ID=B.Customer_Account_ID) AB
+FULL JOIN
+(SELECT Account_ID, Capital_Balance_Amount, Available_Balance_Amount
+FROM `amret-mfi-kh.sandbox.account_balance_20200930`) C
+ON AB.Account_ID=C.Account_ID)
+GROUP BY 1
+ORDER BY 1

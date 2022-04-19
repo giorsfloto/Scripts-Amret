@@ -1,0 +1,39 @@
+SELECT * EXCEPT (Field_Code),
+FROM
+(SELECT * EXCEPT (Field_Code),
+FROM
+(SELECT * EXCEPT (Field_Code),
+FROM
+(
+SELECT * EXCEPT (Field_Code),
+LEAD(Customer_Update_Date)
+    OVER (PARTITION BY Customer_ID ORDER BY Customer_Update_Date ASC) AS R_Customer_End_Date,
+COUNT(*)  OVER (PARTITION BY Customer_ID ORDER BY Customer_Update_Date DESC) AS R_Sequential_Number,
+FROM
+(SELECT R_Customer_Record_ID, R_Batch_ID, R_Batch_DateTime, Company_Name, Country_Code,
+Customer_ID, Customer_Update_Date, Department_ID, Customer_Inputter_ID,
+Customer_Channel_Name, PortfolioManager_ID, Customer_Area_Code, Customer_Creation_Date, 
+Gender_Code, Customer_Birth_Year, Customer_Birth_Month, Sector_Code, Subsector_Code,
+Marital_Status_Name, Customer_Category_Code, Customer_Type_Code, Customer_Status_Name,
+Banked_Previously_Flag, NULL AS Opt_Out_Value
+FROM `amret-mfi-kh.raw.cus_*`) A
+LEFT JOIN
+(SELECT Field_Code, Field_Description AS Customer_Area_Name
+FROM `amret-mfi-kh.dwh.dictionary`
+WHERE Field_Name='CUSTOMER_AREA_CODE') B
+ON A.Customer_Area_Code=B.Field_Code) AB
+LEFT JOIN
+(SELECT Field_Code, Field_Description AS Sector_Name
+FROM `amret-mfi-kh.dwh.dictionary`
+WHERE Field_Name='SECTOR_CODE') C
+ON AB.Sector_Code=C.Field_Code) ABC
+LEFT JOIN
+(SELECT Field_Code, Field_Description AS Subsector_Name
+FROM `amret-mfi-kh.dwh.dictionary`
+WHERE Field_Name='SUBSECTOR_CODE') D
+ON ABC.Subsector_Code=D.Field_Code) ABCD
+LEFT JOIN
+(SELECT Field_Code, Field_Description AS Department_Name
+FROM `amret-mfi-kh.dwh.dictionary`
+WHERE Field_Name='DEPARTMENT_ID') E
+ON ABCD.Department_ID=E.Field_Code

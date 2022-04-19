@@ -1,0 +1,6 @@
+SELECT * FROM
+(SELECT DISTINCT Customer_ID , Department_ID_Scoring AS Department_ID_Scoring_Loan FROM `bank-b.d6s_scoring.loan_scoring`) A
+LEFT JOIN
+(SELECT DISTINCT Customer_ID , Department_ID_Scoring AS Department_ID_Scoring_Schedule FROM `bank-b.d6s_scoring.schedule_scoring`) B
+USING (Customer_ID)
+WHERE Department_ID_Scoring_Loan != Department_ID_Scoring_Schedule
